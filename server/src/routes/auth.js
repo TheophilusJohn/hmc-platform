@@ -1,0 +1,261 @@
+// server/src/routes/auth.js
+const express = require('express');
+const router = express.Router();
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const prisma = require('../config/db');
+const { authenticate } = require('../middleware/auth');
+const { logAudit } = require('../middleware/audit');
+
+const TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || '8h';
+const SESSION_HOURS = 8;
+
+function generateToken(user) {
+  return jwt.sign(
+    { userId: user.id, role: user.role, userIdDisplay: user.userIdDisplay },
+    process.env.JWT_SECRET,
+    { expiresIn: TOKEN_EXPIRY }
+  );
+}
+
+// POST /api/auth/login
+router.post('/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: { auth: true, studentProfile: true, facultyProfile: true },
+    });
+
+    if (!user || !user.auth) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Check account lock
+    if (user.auth.failedAttempts >= 5) {
+      return res.status(423).json({ error: 'Account locked after too many failed attempts. Contact Admin.' });
+    }
+
+    if (user.status === 'INACTIVE' || user.status === 'SUSPENDED') {
+      return res.status(403).json({ error: `Account ${user.status.toLowerCase()}. Contact Admin.` });
+    }
+
+    // Check temp password first
+    let isTempPassword = false;
+    if (user.auth.tempPasswordHash && user.auth.tempPasswordExpires > new Date()) {
+      const tempMatch = await bcrypt.compare(password, user.auth.tempPasswordHash);
+      if (tempMatch) isTempPassword = true;
+    }
+
+    // Check main password
+    const mainMatch = await bcrypt.compare(password, user.auth.passwordHash);
+
+    if (!isTempPassword && !mainMatch) {
+      await prisma.userAuth.update({
+        where: { userId: user.id },
+        data: { failedAttempts: { increment: 1 } },
+      });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Reset failed attempts
+    await prisma.userAuth.update({
+      where: { userId: user.id },
+      data: { failedAttempts: 0, lastLogin: new Date() },
+    });
+
+    const token = generateToken(user);
+
+    // Create session
+    await prisma.session.create({
+      data: {
+        userId: user.id,
+        token,
+        expiresAt: new Date(Date.now() + SESSION_HOURS * 60 * 60 * 1000),
+        device: req.headers['user-agent'] || 'unknown',
+        ipAddress: req.ip,
+      }
+    });
+
+    await logAudit({ actorId: user.id, action: 'LOGIN', tableName: 'users', recordId: user.id, ipAddress: req.ip });
+
+    const profileName = user.studentProfile
+      ? `${user.studentProfile.firstName} ${user.studentProfile.lastName}`
+      : user.facultyProfile
+        ? `${user.facultyProfile.firstName} ${user.facultyProfile.lastName}`
+        : user.email;
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        userIdDisplay: user.userIdDisplay,
+        role: user.role,
+        email: user.email,
+        name: profileName,
+        status: user.status,
+        studentType: user.studentProfile?.studentType,
+        studyMode: user.studentProfile?.studyMode,
+      },
+      forcePasswordChange: isTempPassword,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/auth/change-password
+router.post('/change-password', authenticate, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword, isFirstLogin } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const auth = await prisma.userAuth.findUnique({ where: { userId: req.user.id } });
+
+    if (!isFirstLogin) {
+      const match = await bcrypt.compare(currentPassword, auth.passwordHash);
+      if (!match) return res.status(400).json({ error: 'Current password is incorrect' });
+    } else {
+      // Verify temp password
+      if (!auth.tempPasswordHash) return res.status(400).json({ error: 'No temporary password set' });
+      const tempMatch = await bcrypt.compare(currentPassword, auth.tempPasswordHash);
+      if (!tempMatch) return res.status(400).json({ error: 'Temporary password is incorrect' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await prisma.userAuth.update({
+      where: { userId: req.user.id },
+      data: {
+        passwordHash: newHash,
+        tempPasswordHash: null,
+        tempPasswordExpires: null,
+      }
+    });
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/auth/forgot-password
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email, userIdDisplay } = req.body;
+
+    const user = await prisma.user.findFirst({
+      where: email ? { email } : { userIdDisplay },
+      include: { auth: true },
+    });
+
+    // Always return success to prevent user enumeration
+    if (!user) {
+      return res.json({ message: 'If that account exists, a reset link has been sent.' });
+    }
+
+    const resetToken = uuidv4();
+    const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await prisma.userAuth.update({
+      where: { userId: user.id },
+      data: { resetToken, resetTokenExpires: expires },
+    });
+
+    // Send email via service
+    try {
+      const { sendPasswordResetEmail } = require('../services/email.service');
+      const resetLink = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+      await sendPasswordResetEmail(user, resetLink);
+    } catch (_e) {
+      // Log but don't fail
+    }
+
+    res.json({ message: 'If that account exists, a reset link has been sent.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/auth/reset-password/:token
+router.post('/reset-password/:token', async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const auth = await prisma.userAuth.findFirst({
+      where: {
+        resetToken: token,
+        resetTokenExpires: { gt: new Date() },
+      }
+    });
+
+    if (!auth) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await prisma.userAuth.update({
+      where: { id: auth.id },
+      data: {
+        passwordHash: newHash,
+        resetToken: null,
+        resetTokenExpires: null,
+        tempPasswordHash: null,
+        tempPasswordExpires: null,
+      }
+    });
+
+    res.json({ message: 'Password reset successfully. You can now log in.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/auth/logout
+router.post('/logout', authenticate, async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.split(' ')[1];
+
+    if (token) {
+      await prisma.session.deleteMany({ where: { userId: req.user.id, token } });
+    }
+
+    await logAudit({ actorId: req.user.id, action: 'LOGOUT', tableName: 'users', recordId: req.user.id, ipAddress: req.ip });
+
+    res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/auth/me
+router.get('/me', authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      include: {
+        studentProfile: { include: { programme: true, batch: true } },
+        facultyProfile: true,
+      }
+    });
+
+    res.json({ user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;

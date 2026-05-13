@@ -1,0 +1,84 @@
+import { useState } from 'react';
+import { PageWrapper, Card, Btn, Badge, Table, Modal, Input, Select } from '../../components/common';
+import { useApi } from '../../hooks/useApi';
+import api from '../../utils/api';
+
+const DIFF = [{ value: 'easy', label: 'Easy' }, { value: 'medium', label: 'Medium' }, { value: 'hard', label: 'Hard' }];
+const DIFF_COLORS = { easy: 'green', medium: 'amber', hard: 'red' };
+
+export default function QuestionBank() {
+  const [selectedSubject, setSelectedSubject] = useState('');
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ question: '', type: 'mcq', options: ['', '', '', ''], answer: '0', difficulty: 'medium', marks: 1, explanation: '' });
+
+  const { data: subjects } = useApi('/subjects?mine=true');
+  const { data: questions, refetch } = useApi(selectedSubject ? `/subjects/${selectedSubject}/questions` : null, [selectedSubject]);
+
+  const handleCreate = async () => {
+    await api.post(`/subjects/${selectedSubject}/questions`, form);
+    setOpen(false); refetch();
+  };
+
+  const cols = [
+    { key: 'question', label: 'Question', render: v => <span style={{ fontSize: 13 }}>{v.length > 80 ? v.slice(0, 80) + '...' : v}</span> },
+    { key: 'type', label: 'Type', render: v => <Badge color="purple">{v}</Badge> },
+    { key: 'difficulty', label: 'Diff.', render: v => <Badge color={DIFF_COLORS[v]}>{v}</Badge> },
+    { key: 'marks', label: 'Marks', render: v => v },
+    { key: 'usedCount', label: 'Used', render: v => v || 0 },
+    { key: 'id', label: '', render: id => <Btn size="sm" variant="danger" onClick={async () => { await api.delete(`/questions/${id}`); refetch(); }}>Delete</Btn> },
+  ];
+
+  return (
+    <PageWrapper title="Question Bank" subtitle="Create and manage exam questions">
+      <Card>
+        <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+          <select value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)}
+            style={{ padding: '8px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 13, background: '#fff', minWidth: 240 }}>
+            <option value="">Select subject…</option>
+            {(subjects?.subjects || []).map(s => <option key={s.id} value={s.id}>{s.code} — {s.name}</option>)}
+          </select>
+          {selectedSubject && <Btn onClick={() => setOpen(true)}>+ Add Question</Btn>}
+        </div>
+        {selectedSubject && <Table columns={cols} rows={questions?.questions || []} />}
+      </Card>
+
+      {open && (
+        <Modal title="Add Question" onClose={() => setOpen(false)} wide>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div>
+              <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', display: 'block', marginBottom: 6 }}>Question</label>
+              <textarea value={form.question} onChange={e => setForm(f => ({ ...f, question: e.target.value }))}
+                style={{ width: '100%', minHeight: 80, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', fontFamily: 'DM Sans' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+              <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} options={[{ value: 'mcq', label: 'MCQ' }, { value: 'true_false', label: 'True/False' }, { value: 'short', label: 'Short Answer' }]} />
+              <Select label="Difficulty" value={form.difficulty} onChange={e => setForm(f => ({ ...f, difficulty: e.target.value }))} options={DIFF} />
+              <Input label="Marks" type="number" value={form.marks} onChange={e => setForm(f => ({ ...f, marks: e.target.value }))} />
+            </div>
+            {form.type === 'mcq' && (
+              <div>
+                <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', display: 'block', marginBottom: 8 }}>Options (select correct answer)</label>
+                {form.options.map((opt, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+                    <input type="radio" name="answer" value={String(i)} checked={form.answer === String(i)} onChange={e => setForm(f => ({ ...f, answer: e.target.value }))} />
+                    <input value={opt} onChange={e => { const opts = [...form.options]; opts[i] = e.target.value; setForm(f => ({ ...f, options: opts })); }}
+                      placeholder={`Option ${i + 1}`}
+                      style={{ flex: 1, padding: '8px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 13 }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {form.type === 'true_false' && (
+              <Select label="Correct Answer" value={form.answer} onChange={e => setForm(f => ({ ...f, answer: e.target.value }))} options={[{ value: 'true', label: 'True' }, { value: 'false', label: 'False' }]} />
+            )}
+            <Input label="Explanation (optional)" value={form.explanation} onChange={e => setForm(f => ({ ...f, explanation: e.target.value }))} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+            <Btn variant="outline" onClick={() => setOpen(false)}>Cancel</Btn>
+            <Btn onClick={handleCreate}>Add Question</Btn>
+          </div>
+        </Modal>
+      )}
+    </PageWrapper>
+  );
+}
