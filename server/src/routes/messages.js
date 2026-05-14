@@ -90,6 +90,16 @@ router.post('/', authenticate, adminOrTA, async (req, res, next) => {
     const channelArr = Array.isArray(channels) ? channels :
       (channels && typeof channels === 'object' ? Object.entries(channels).filter(([_, v]) => v).map(([k]) => k) : []);
 
+    // Refuse to fan out beyond a sane per-request cap — protects the SMTP
+    // quota and prevents a compromised TA credential from blasting thousands
+    // of recipients in one request.
+    const MAX_RECIPIENTS_PER_MESSAGE = 1000;
+    if (recipients.length > MAX_RECIPIENTS_PER_MESSAGE) {
+      return res.status(400).json({
+        error: `Recipient count (${recipients.length}) exceeds per-message cap of ${MAX_RECIPIENTS_PER_MESSAGE}. Narrow the scope (batch/programme/individual).`,
+      });
+    }
+
     const message = await prisma.message.create({
       data: {
         senderId: req.user.id,
@@ -100,11 +110,33 @@ router.post('/', authenticate, adminOrTA, async (req, res, next) => {
       },
     });
 
+    // Audit the broadcast — actor + recipient count, NOT recipient identities
+    // (we don't want PII in the immutable audit log).
+    try {
+      const { logAudit } = require('../middleware/audit');
+      await logAudit({
+        actorId: req.user.id,
+        action: 'MASS_MESSAGE_SENT',
+        tableName: 'messages',
+        recordId: message.id,
+        newValue: { type, channels: channelArr, recipientCount: recipients.length, scope: recipientScope?.type || 'all' },
+        ipAddress: req.ip,
+      });
+    } catch (_e) {}
+
     if (channelArr.includes('email') && settingsMap.sendgrid?.api_key) {
+      // Escape the body BEFORE personalisation so a TA can't inject <script> /
+      // image-onerror payloads that render in recipient inboxes. Templates
+      // intentionally allow {tag} substitution; everything else is escaped.
+      const esc = (s) => String(s || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      const safeBody = esc(body).replace(/\n/g, '<br>');
+      const safeSubject = esc(subject);
       await Promise.allSettled(recipients.map(r => {
         const name = `${r.studentProfile?.firstName || ''} ${r.studentProfile?.lastName || ''}`.trim();
-        const personalised = personalise(body, { studentName: name });
-        return emailService.sendGenericMessage(r.email, subject, personalised);
+        const personalised = personalise(safeBody, { studentName: esc(name) });
+        return emailService.sendGenericMessage(r.email, safeSubject, personalised);
       }));
     }
 

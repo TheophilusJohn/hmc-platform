@@ -16,16 +16,35 @@ router.get('/programmes', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Allowlisted ReferralProgramme fields — never spread req.body so callers can't
+// set internal/computed columns.
+const RP_FIELDS = [
+  'name', 'validFrom', 'validUntil', 'incentiveType',
+  'domesticIncentiveInr', 'internationalIncentiveUsd',
+  'maxReferrals', 'eligibility', 'eligibilityProgrammeId', 'isActive',
+];
+function pickRpFields(body) {
+  const out = {};
+  for (const k of RP_FIELDS) {
+    if (body[k] === undefined) continue;
+    if (k === 'validFrom' || k === 'validUntil') out[k] = new Date(body[k]);
+    else out[k] = body[k];
+  }
+  return out;
+}
+
 router.post('/programmes', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const rp = await prisma.referralProgramme.create({ data: req.body });
+    const data = pickRpFields(req.body);
+    const rp = await prisma.referralProgramme.create({ data });
     res.status(201).json(rp);
   } catch (err) { next(err); }
 });
 
 router.put('/programmes/:id', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const rp = await prisma.referralProgramme.update({ where: { id: req.params.id }, data: req.body });
+    const data = pickRpFields(req.body);
+    const rp = await prisma.referralProgramme.update({ where: { id: req.params.id }, data });
     res.json(rp);
   } catch (err) { next(err); }
 });
@@ -135,52 +154,60 @@ router.post('/trigger/:applicantId', authenticate, require('../middleware/rbac')
     });
     if (!rp) return res.json({ triggered: false, reason: 'No active referral programme' });
 
-    const existing = await prisma.referral.findFirst({
-      where: { referrerId: referrerProfile.id, referredApplicantId: applicant.id },
-    });
+    // Wrap referral + waiver-credit ledger row + status flip in a single
+    // transaction. Pre-fix, a notification failure (or any post-update error)
+    // could leave the referral marked TRIGGERED but the reward not applied.
+    const referral = await prisma.$transaction(async (tx) => {
+      const existing = await tx.referral.findFirst({
+        where: { referrerId: referrerProfile.id, referredApplicantId: applicant.id },
+      });
+      const created = existing
+        ? await tx.referral.update({ where: { id: existing.id }, data: { status: 'TRIGGERED' } })
+        : await tx.referral.create({
+            data: {
+              referrerId: referrerProfile.id,
+              referredApplicantId: applicant.id,
+              programmeId: rp.id,
+              status: 'TRIGGERED',
+            },
+          });
 
-    const referral = existing
-      ? await prisma.referral.update({ where: { id: existing.id }, data: { status: 'TRIGGERED' } })
-      : await prisma.referral.create({
+      if (rp.incentiveType === 'WAIVER' || rp.incentiveType === 'BOTH') {
+        const isIntl = referrerProfile.studentType === 'INTERNATIONAL';
+        const amount = isIntl ? rp.internationalIncentiveUsd : rp.domesticIncentiveInr;
+
+        await tx.studentFeeLedger.create({
           data: {
-            referrerId: referrerProfile.id,
-            referredApplicantId: applicant.id,
-            programmeId: rp.id,
-            status: 'TRIGGERED',
+            studentId: referrerProfile.id,
+            amount: -amount,
+            currency: isIntl ? 'USD' : 'INR',
+            balance: -amount,
+            status: 'WAIVED',
+            description: `Referral reward — ${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
           },
         });
 
-    if (rp.incentiveType === 'WAIVER' || rp.incentiveType === 'BOTH') {
-      const isIntl = referrerProfile.studentType === 'INTERNATIONAL';
-      const amount = isIntl ? rp.internationalIncentiveUsd : rp.domesticIncentiveInr;
-
-      await prisma.studentFeeLedger.create({
-        data: {
-          studentId: referrerProfile.id,
-          amount: -amount,
-          currency: isIntl ? 'USD' : 'INR',
-          balance: -amount,
-          status: 'WAIVED',
-          description: `Referral reward — ${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
-        },
-      });
-
-      await prisma.referral.update({
-        where: { id: referral.id },
-        data: { status: 'REWARDED', rewardAppliedAt: new Date() },
-      });
-    }
-
-    if (rp.incentiveType === 'CASH' || rp.incentiveType === 'BOTH') {
-      const admins = await prisma.user.findMany({ where: { role: 'FULL_ADMIN', status: 'ACTIVE' } });
-      for (const admin of admins) {
-        await notif.createNotification(admin.id, 'referral_cash_reward', 'Cash Referral Reward Pending',
-          `${referrerProfile.user.userIdDisplay} earned a cash referral. Please process.`, '/admin/finance');
+        await tx.referral.update({
+          where: { id: created.id },
+          data: { status: 'REWARDED', rewardAppliedAt: new Date() },
+        });
       }
-    }
+      return created;
+    });
 
-    await notif.createNotification(referrerProfile.user.id, 'referral_reward', 'Referral Reward Applied',
-      'Your referral reward has been applied.', '/student/referrals');
+    // Side effects outside the transaction: notifications. If they fail, the
+    // referral and ledger row still stand.
+    try {
+      if (rp.incentiveType === 'CASH' || rp.incentiveType === 'BOTH') {
+        const admins = await prisma.user.findMany({ where: { role: 'FULL_ADMIN', status: 'ACTIVE' } });
+        for (const admin of admins) {
+          await notif.createNotification(admin.id, 'referral_cash_reward', 'Cash Referral Reward Pending',
+            `${referrerProfile.user.userIdDisplay} earned a cash referral. Please process.`, '/admin/finance');
+        }
+      }
+      await notif.createNotification(referrerProfile.user.id, 'referral_reward', 'Referral Reward Applied',
+        'Your referral reward has been applied.', '/student/referrals');
+    } catch (_e) {}
 
     res.json({ triggered: true, referral });
   } catch (err) { next(err); }

@@ -19,10 +19,17 @@ const TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || '8h';
 const SESSION_HOURS = 8;
 
 function generateToken(user, mustChangePassword = false) {
+  // iss/aud/sub claims so cross-service token use can be validated and a
+  // hostile reuse of a leaked token from a different deployment is rejected.
   return jwt.sign(
     { userId: user.id, role: user.role, userIdDisplay: user.userIdDisplay, mustChangePassword },
     process.env.JWT_SECRET,
-    { expiresIn: TOKEN_EXPIRY }
+    {
+      expiresIn: TOKEN_EXPIRY,
+      issuer: 'hmc-portal',
+      audience: 'hmc-portal-client',
+      subject: user.id,
+    }
   );
 }
 
@@ -73,14 +80,19 @@ router.post('/login', async (req, res, next) => {
     const mainMatch = await bcrypt.compare(password, user.auth.passwordHash);
 
     if (!isTempPassword && !mainMatch) {
-      const nextFailed = (user.auth.failedAttempts || 0) + 1;
-      const lock = nextFailed >= MAX_FAILED_ATTEMPTS
-        ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
-        : null;
-      await prisma.userAuth.update({
+      // Atomic increment to avoid concurrent failed attempts losing increments
+      // (and thereby letting an attacker exceed MAX_FAILED_ATTEMPTS by racing).
+      const updated = await prisma.userAuth.update({
         where: { userId: user.id },
-        data: { failedAttempts: nextFailed, lockedUntil: lock },
+        data: { failedAttempts: { increment: 1 } },
+        select: { failedAttempts: true },
       });
+      if (updated.failedAttempts >= MAX_FAILED_ATTEMPTS) {
+        await prisma.userAuth.update({
+          where: { userId: user.id },
+          data: { lockedUntil: new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000) },
+        });
+      }
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -132,13 +144,26 @@ router.post('/login', async (req, res, next) => {
 });
 
 // POST /api/auth/change-password - auto-detects whether current pw is temp or main
+// Reasonable complexity floor — generated temp passwords already meet this,
+// so users won't be surprised by the rule on first password change.
+function validatePasswordComplexity(pw) {
+  if (!pw || pw.length < 8) return 'Password must be at least 8 characters';
+  if (pw.length > 128) return 'Password is too long (max 128 characters)';
+  const hasLower = /[a-z]/.test(pw);
+  const hasUpper = /[A-Z]/.test(pw);
+  const hasDigit = /\d/.test(pw);
+  if (!hasLower || !hasUpper || !hasDigit) {
+    return 'Password must contain at least one lowercase letter, one uppercase letter, and one digit';
+  }
+  return null;
+}
+
 router.post('/change-password', authenticate, async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword) return res.status(400).json({ error: 'Current password is required' });
-    if (!newPassword || newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
+    const complexityErr = validatePasswordComplexity(newPassword);
+    if (complexityErr) return res.status(400).json({ error: complexityErr });
     if (currentPassword === newPassword) {
       return res.status(400).json({ error: 'New password must differ from current' });
     }
@@ -234,9 +259,8 @@ router.post('/reset-password/:token', async (req, res, next) => {
     const { token } = req.params;
     const { newPassword } = req.body;
 
-    if (!newPassword || newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
+    const complexityErr = validatePasswordComplexity(newPassword);
+    if (complexityErr) return res.status(400).json({ error: complexityErr });
 
     // The token in the URL is the raw value emailed to the user; the DB stores its hash.
     const auth = await prisma.userAuth.findFirst({

@@ -39,7 +39,14 @@ router.post('/subjects/:id/units', authenticate, facultyOrAbove, async (req, res
 
 router.put('/units/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    const unit = await prisma.courseUnit.update({ where: { id: req.params.id }, data: req.body });
+    // Whitelist editable fields — never let the caller reassign `subjectId`
+    // to attach a unit to a subject they don't own.
+    const { title, orderIndex, status } = req.body;
+    const data = {};
+    if (title !== undefined) data.title = title;
+    if (orderIndex !== undefined) data.orderIndex = parseInt(orderIndex, 10);
+    if (status !== undefined) data.status = String(status).toLowerCase();
+    const unit = await prisma.courseUnit.update({ where: { id: req.params.id }, data });
     res.json(unit);
   } catch (err) { next(err); }
 });
@@ -70,7 +77,14 @@ router.post('/units/:id/content', authenticate, facultyOrAbove, async (req, res,
 
 router.put('/content/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    const content = await prisma.unitContent.update({ where: { id: req.params.id }, data: req.body });
+    // Whitelist editable content fields (never `unitId`).
+    const { type, contentUrl, contentText, orderIndex } = req.body;
+    const data = {};
+    if (type !== undefined) data.type = type;
+    if (contentUrl !== undefined) data.contentUrl = contentUrl;
+    if (contentText !== undefined) data.contentText = contentText;
+    if (orderIndex !== undefined) data.orderIndex = parseInt(orderIndex, 10);
+    const content = await prisma.unitContent.update({ where: { id: req.params.id }, data });
     res.json(content);
   } catch (err) { next(err); }
 });

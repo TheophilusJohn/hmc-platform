@@ -1,7 +1,15 @@
 const { logger } = require('../utils/logger');
 
+// Path strings can carry query params that include emails / tokens / UUIDs —
+// log only the route path, not the query.
+function sanitizePath(p) {
+  if (!p) return p;
+  const q = String(p).indexOf('?');
+  return q >= 0 ? String(p).slice(0, q) + '?[redacted]' : String(p);
+}
+
 const errorHandler = (err, req, res, next) => {
-  logger.error(err.message, { stack: err.stack, path: req.path, method: req.method });
+  logger.error(err.message, { stack: err.stack, path: sanitizePath(req.path), method: req.method });
 
   if (err.code === 'P2002') {
     return res.status(409).json({ error: 'A record with this value already exists.', field: err.meta?.target });

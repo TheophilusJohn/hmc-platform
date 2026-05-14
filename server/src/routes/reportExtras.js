@@ -223,7 +223,12 @@ router.get('/referrals', authenticate, adminOnly, async (req, res, next) => {
 // 6. AT-RISK (handle both /at/risk and /at-risk URL shapes)
 async function atRiskHandler(req, res, next) {
   try {
+    // Filter inactive at the DB level + cap memory for very large datasets.
+    // Pre-fix this loaded every StudentProfile with attendance + enrollments +
+    // ledger in one query, with no upper bound — could OOM the server.
     const students = await prisma.studentProfile.findMany({
+      where: { user: { status: 'ACTIVE' } },
+      take: 5000,
       include: {
         user: { select: { userIdDisplay: true, status: true } },
         programme: { select: { name: true } },

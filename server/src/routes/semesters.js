@@ -76,15 +76,32 @@ router.post('/:id/archive', authenticate, adminOnly, async (req, res, next) => {
 router.post('/:id/copy-setup', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { sourceId } = req.body;
+    if (!sourceId) return res.status(400).json({ error: 'sourceId is required' });
+
+    // Target and source must share the same batch (and therefore the same
+    // programme). Otherwise copying carries the source's batchId/programmeId
+    // into a target that belongs to a different batch — orphaning subjects.
+    const [source, target] = await Promise.all([
+      prisma.semester.findUnique({ where: { id: sourceId }, select: { batchId: true, batch: { select: { programmeId: true } } } }),
+      prisma.semester.findUnique({ where: { id: req.params.id }, select: { batchId: true, batch: { select: { programmeId: true } } } }),
+    ]);
+    if (!source || !target) return res.status(404).json({ error: 'Source or target semester not found' });
+    if (source.batchId !== target.batchId) {
+      return res.status(400).json({ error: 'Cross-batch copy is not allowed — source and target semesters must belong to the same batch.' });
+    }
+
     const sourceSubjects = await prisma.subject.findMany({ where: { semesterId: sourceId } });
 
-    const created = await Promise.all(sourceSubjects.map(s =>
+    // Remap programmeId/batchId from the target to guarantee referential cohesion
+    // even if source rows were created mismatched.
+    const created = await prisma.$transaction(sourceSubjects.map(s =>
       prisma.subject.create({
         data: {
           name: s.name, code: s.code, creditHours: s.creditHours, type: s.type,
           eseMarks: s.eseMarks, iaMarks: s.iaMarks, totalMarks: s.totalMarks,
           passMark: s.passMark, examMode: s.examMode,
-          programmeId: s.programmeId, batchId: s.batchId,
+          programmeId: target.batch.programmeId,
+          batchId: target.batchId,
           semesterId: req.params.id, status: 'active',
         },
       })

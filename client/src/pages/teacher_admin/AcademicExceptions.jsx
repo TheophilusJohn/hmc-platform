@@ -10,12 +10,34 @@ export default function AcademicExceptions() {
   const [tab, setTab] = useState('pending');
   const [selected, setSelected] = useState(null);
   const [decision, setDecision] = useState({ notes: '', newValue: '' });
+  const [deciding, setDeciding] = useState(false);
   const { data, refetch } = useApi(`/exceptions?status=${tab}`);
   const exceptions = data?.exceptions || [];
 
+  // Open a row's review modal with fresh decision state. Pre-fix, `decision`
+  // was reused across rows so reopening another applicant's modal pre-filled
+  // the previous row's notes/newValue.
+  const openReview = (row) => {
+    setSelected(row);
+    setDecision({ notes: '', newValue: '' });
+  };
+  const closeReview = () => {
+    setSelected(null);
+    setDecision({ notes: '', newValue: '' });
+  };
+
   const handleDecide = async (action) => {
-    await api.put(`/exceptions/${selected.id}`, { status: String(action).toUpperCase(), ...decision });
-    setSelected(null); refetch();
+    if (deciding) return;
+    setDeciding(true);
+    try {
+      await api.put(`/exceptions/${selected.id}`, { status: String(action).toUpperCase(), ...decision });
+      closeReview();
+      refetch();
+    } catch (e) {
+      alert(e?.response?.data?.error || 'Failed to record decision.');
+    } finally {
+      setDeciding(false);
+    }
   };
 
   return (
@@ -35,7 +57,7 @@ export default function AcademicExceptions() {
                 {e.attachmentUrl && <a href={e.attachmentUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: '#0F2B4A' }}>View attachment ↗</a>}
               </div>
               {tab === 'pending' && (
-                <Btn size="sm" onClick={() => setSelected(e)}>Review</Btn>
+                <Btn size="sm" onClick={() => openReview(e)}>Review</Btn>
               )}
             </div>
           ))}
@@ -44,7 +66,7 @@ export default function AcademicExceptions() {
       </Card>
 
       {selected && (
-        <Modal title={`Review: ${TYPE_LABELS[selected.type]}`} onClose={() => setSelected(null)}>
+        <Modal title={`Review: ${TYPE_LABELS[selected.type]}`} onClose={closeReview}>
           <div style={{ background: '#F8F9FA', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13 }}>
             <div><strong>Student:</strong> {selected.studentName}</div>
             <div><strong>Subject:</strong> {selected.subjectName || '—'}</div>
@@ -64,9 +86,9 @@ export default function AcademicExceptions() {
               style={{ width: '100%', minHeight: 80, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 13, boxSizing: 'border-box', fontFamily: 'DM Sans' }} />
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <Btn variant="outline" onClick={() => setSelected(null)}>Cancel</Btn>
-            <Btn variant="danger" onClick={() => handleDecide('rejected')}>Reject</Btn>
-            <Btn onClick={() => handleDecide('approved')}>Approve</Btn>
+            <Btn variant="outline" onClick={closeReview}>Cancel</Btn>
+            <Btn variant="danger" onClick={() => handleDecide('rejected')} disabled={deciding}>{deciding ? '…' : 'Reject'}</Btn>
+            <Btn onClick={() => handleDecide('approved')} disabled={deciding}>{deciding ? '…' : 'Approve'}</Btn>
           </div>
         </Modal>
       )}

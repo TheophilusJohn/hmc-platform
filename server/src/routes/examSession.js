@@ -68,27 +68,24 @@ router.post('/:id/start', authenticate, requireRole('STUDENT'), async (req, res,
     if (exam.startDatetime && now < exam.startDatetime) return res.status(400).json({ error: 'Exam window has not opened yet.' });
     if (exam.endDatetime && now > exam.endDatetime) return res.status(400).json({ error: 'Exam window has closed.' });
 
-    const existing = await prisma.submission.findMany({
-      where: { examId: req.params.id, studentId: sp.id, status: { not: 'DRAFT' } },
-    });
-    if (existing.length >= (exam.maxAttempts || 1)) return res.status(400).json({ error: 'Maximum attempts reached.' });
-
-    let draft = await prisma.submission.findFirst({
-      where: { examId: req.params.id, studentId: sp.id, status: 'DRAFT' },
-    });
-
-    let questions = exam.questions;
-    if (exam.settings?.shuffleQuestions) questions = [...questions].sort(() => Math.random() - 0.5);
-    if (exam.settings?.shuffleOptions) {
-      questions = questions.map(q => ({ ...q, options: q.options ? [...q.options].sort(() => Math.random() - 0.5) : q.options }));
-    }
-
-    if (!draft) {
-      draft = await prisma.submission.create({
+    // Race-safe attempt-counting + draft creation: two concurrent /start
+    // requests could otherwise both see "no draft" and create duplicates.
+    const draft = await prisma.$transaction(async (tx) => {
+      const existing = await tx.submission.findFirst({
+        where: { examId: req.params.id, studentId: sp.id, status: 'DRAFT' },
+      });
+      if (existing) return existing;
+      const completed = await tx.submission.count({
+        where: { examId: req.params.id, studentId: sp.id, status: { not: 'DRAFT' } },
+      });
+      if (completed >= (exam.maxAttempts || 1)) {
+        throw Object.assign(new Error('Maximum attempts reached.'), { status: 400 });
+      }
+      return tx.submission.create({
         data: {
           examId: req.params.id,
           studentId: sp.id,
-          attemptNumber: existing.length + 1,
+          attemptNumber: completed + 1,
           answers: {},
           status: 'DRAFT',
           startedAt: now,
@@ -96,28 +93,53 @@ router.post('/:id/start', authenticate, requireRole('STUDENT'), async (req, res,
           timePerQuestion: {},
         },
       });
+    });
 
-      if (req.sessionId) {
-        await prisma.session.update({
-          where: { id: req.sessionId },
-          data: { isExamSession: true },
-        });
-      }
+    if (req.sessionId) {
+      await prisma.session.update({
+        where: { id: req.sessionId },
+        data: { isExamSession: true },
+      });
+    }
+
+    let questions = exam.questions;
+    if (exam.settings?.shuffleQuestions) questions = [...questions].sort(() => Math.random() - 0.5);
+    if (exam.settings?.shuffleOptions) {
+      questions = questions.map(q => ({ ...q, options: q.options ? [...q.options].sort(() => Math.random() - 0.5) : q.options }));
     }
 
     const safeQuestions = questions.map(q => ({ ...q, correctAnswer: undefined, modelAnswer: undefined }));
     res.json({ submission: draft, exam: { ...exam, questions: safeQuestions } });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 router.put('/submissions/:id/autosave', authenticate, requireSubmissionOwner, async (req, res, next) => {
   try {
     const { answers, timePerQuestion } = req.body;
-    const submission = await prisma.submission.update({
-      where: { id: req.params.id },
+    // Refuse autosave after the submission has already been finalized — the
+    // race window is real: a student could submit, then a stale autosave
+    // interval still fires and overwrites the answers post-grade.
+    const current = await prisma.submission.findUnique({
+      where: { id: req.params.id }, select: { status: true },
+    });
+    if (!current) return res.status(404).json({ error: 'Submission not found' });
+    if (current.status !== 'DRAFT') {
+      return res.status(409).json({ error: 'Submission has been finalized; autosave ignored.' });
+    }
+    // updateMany scoped to status=DRAFT — if a concurrent submit flipped the
+    // row while we were checking, this update affects zero rows instead of
+    // clobbering finalized answers.
+    const result = await prisma.submission.updateMany({
+      where: { id: req.params.id, status: 'DRAFT' },
       data: { answers, timePerQuestion, lastSavedAt: new Date() },
     });
-    res.json({ saved: true, lastSavedAt: submission.lastSavedAt });
+    if (result.count === 0) {
+      return res.status(409).json({ error: 'Submission was finalized; autosave ignored.' });
+    }
+    res.json({ saved: true });
   } catch (err) { next(err); }
 });
 
@@ -133,14 +155,34 @@ router.post('/submissions/:id/flag', authenticate, requireSubmissionOwner, async
   } catch (err) { next(err); }
 });
 
+// Real-time similarity check, used during the exam by the client. The score
+// is NOT returned — exposing it would let a student iteratively rewrite until
+// the score dropped below the threshold (defeating the plagiarism check
+// entirely). We compute the score so faculty can see it post-grading, and the
+// client just gets an opaque "ok".
 router.post('/submissions/:id/similarity-check', authenticate, requireSubmissionOwner, async (req, res, next) => {
   try {
     const { text } = req.body;
-    if (!text || text.length < 50) return res.json({ score: 0 });
+    if (!text || text.length < 50) return res.json({ ok: true });
 
     const submission = await prisma.submission.findUnique({ where: { id: req.params.id } });
-    const score = await plagiarismService.compareStudentToStudent(text, submission.examId);
-    res.json({ score: Math.round(score) });
+    // Best-effort recording; surface result internally only.
+    try {
+      const score = await plagiarismService.compareStudentToStudent(text, submission.examId);
+      // Persist on the submission row so faculty can inspect later. We only
+      // ever overwrite an existing similarity score if the new one is higher,
+      // so a student can't intentionally "wash out" an earlier high score.
+      const existing = await prisma.submission.findUnique({
+        where: { id: req.params.id }, select: { plagiarismScore: true },
+      });
+      if ((existing?.plagiarismScore ?? 0) < score) {
+        await prisma.submission.update({
+          where: { id: req.params.id },
+          data: { plagiarismScore: score },
+        });
+      }
+    } catch (_e) {}
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

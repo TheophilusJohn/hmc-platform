@@ -6,6 +6,7 @@ const { authenticate } = require('../middleware/auth');
 const { adminOnly, requireRole } = require('../middleware/rbac');
 const pdfService = require('../services/pdf.service');
 const notif = require('../services/notification.service');
+const { logAudit } = require('../middleware/audit');
 
 // GET /api/transcripts/unofficial/my — student downloads their own unofficial transcript
 router.get('/unofficial/my', authenticate, requireRole('STUDENT'), async (req, res, next) => {
@@ -20,7 +21,8 @@ router.get('/unofficial/my', authenticate, requireRole('STUDENT'), async (req, r
 
 router.post('/unofficial/:studentId', authenticate, async (req, res, next) => {
   try {
-    if (req.user.role === 'STUDENT') {
+    const isOwnRequest = req.user.role === 'STUDENT';
+    if (isOwnRequest) {
       const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id } });
       if (!sp || sp.id !== req.params.studentId) return res.status(403).json({ error: 'Forbidden' });
     } else if (!['FULL_ADMIN', 'TEACHER_ADMIN'].includes(req.user.role)) {
@@ -28,6 +30,19 @@ router.post('/unofficial/:studentId', authenticate, async (req, res, next) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
     const pdfBuffer = await pdfService.generateUnofficialTranscript(req.params.studentId);
+
+    // Audit when an admin pulls another student's transcript — privileged read.
+    if (!isOwnRequest) {
+      logAudit({
+        actorId: req.user.id,
+        action: 'TRANSCRIPT_DOWNLOAD',
+        tableName: 'studentProfile',
+        recordId: req.params.studentId,
+        newValue: { type: 'unofficial' },
+        ipAddress: req.ip,
+      }).catch(() => {});
+    }
+
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="HMC-Unofficial-Transcript.pdf"' });
     res.send(pdfBuffer);
   } catch (err) { next(err); }
@@ -111,18 +126,19 @@ router.get('/verify/:uuid', async (req, res, next) => {
   try {
     const request = await prisma.officialTranscriptRequest.findFirst({
       where: { verificationUuid: req.params.uuid, status: 'READY' },
-      include: { student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } } },
+      include: { student: { select: { firstName: true, lastName: true } } },
     });
     if (!request) return res.status(404).json({ valid: false, message: 'Transcript not found or invalid QR code.' });
 
+    // Public endpoint: minimum-information disclosure. We drop userIdDisplay
+    // (login identity) and `purpose` (often references a specific employer
+    // or institution — sensitive PII for a public lookup).
     res.json({
       valid: true,
       student: {
         name: `${request.student?.firstName || ''} ${request.student?.lastName || ''}`.trim(),
-        id: request.student?.user?.userIdDisplay,
       },
       issuedAt: request.updatedAt,
-      purpose: request.purpose,
     });
   } catch (err) { next(err); }
 });

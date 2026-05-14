@@ -28,12 +28,59 @@ export default function UserManagement() {
   const programmes = progData?.programmes || [];
   const allBatches = programmes.flatMap(p => (p.batches || []).map(b => ({ value: b.id, label: `${p.name} – ${b.name}` })));
 
+  // Server returns {users, total} only; derive the per-role counts here so the
+  // header StatCards don't show 0. `withDues` isn't surfaced by the endpoint at
+  // all — hide that tile until/if the server adds it.
+  const studentCount = users.filter(u => u.role === 'STUDENT').length;
+  const facultyCount = users.filter(u => u.role === 'FACULTY' || u.role === 'TEACHER_ADMIN').length;
+
+  // After user creation we render the temp password in a proper modal with a
+  // copy-to-clipboard button (instead of a native alert(), which makes copying
+  // awkward and leaves the secret hanging in the OS-level dialog history).
+  const [createdCreds, setCreatedCreds] = useState(null);
+  const [creating, setCreating] = useState(false);
+
   const handleCreate = async () => {
-    const _res = await api.post('/users', form);
-    if (_res?.data?.tempPassword) { window.alert('User created!\n\nTemporary password: ' + _res.data.tempPassword + '\n\nShare this with the new user.'); }
-    setAddOpen(false);
-    setForm({ firstName: '', lastName: '', email: '', role: 'STUDENT', programmeId: '', studyMode: 'OFFLINE', studentType: 'DOMESTIC' });
-    refetch();
+    if (creating) return;
+    if (!form.firstName?.trim() || !form.lastName?.trim()) {
+      window.alert('First name and last name are required.');
+      return;
+    }
+    const email = String(form.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      window.alert('Please enter a valid email address.');
+      return;
+    }
+    setCreating(true);
+    try {
+      const _res = await api.post('/users', { ...form, email });
+      if (_res?.data?.tempPassword) {
+        setCreatedCreds({
+          name: `${form.firstName} ${form.lastName}`.trim(),
+          email,
+          userIdDisplay: _res.data.user?.userIdDisplay,
+          tempPassword: _res.data.tempPassword,
+        });
+      }
+      setAddOpen(false);
+      setForm({ firstName: '', lastName: '', email: '', role: 'STUDENT', programmeId: '', studyMode: 'OFFLINE', studentType: 'DOMESTIC' });
+      refetch();
+    } catch (e) {
+      window.alert('Failed to create user: ' + (e?.response?.data?.error || e.message));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyTempPw = async () => {
+    if (!createdCreds?.tempPassword) return;
+    try {
+      await navigator.clipboard.writeText(createdCreds.tempPassword);
+    } catch (_e) {
+      // Clipboard API can be blocked (insecure context, permission denied) —
+      // surface the password so admin can copy manually.
+      window.prompt('Copy the temporary password:', createdCreds.tempPassword);
+    }
   };
 
   const handleDeactivate = async (id) => {
@@ -124,9 +171,8 @@ export default function UserManagement() {
     <PageWrapper title="User Management" subtitle="All users, roles and accounts">
       <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
         <StatCard icon="👥" label="Total Users" value={data?.total || 0} color="#0F2B4A" />
-        <StatCard icon="🎒" label="Students" value={data?.students || 0} color="#0F766E" />
-        <StatCard icon="📚" label="Faculty" value={data?.faculty || 0} color="#6D28D9" />
-        <StatCard icon="🔴" label="With Dues" value={data?.withDues || 0} color="#991B1B" />
+        <StatCard icon="🎒" label="Students" value={studentCount} color="#0F766E" />
+        <StatCard icon="📚" label="Faculty" value={facultyCount} color="#6D28D9" />
       </div>
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -237,6 +283,29 @@ export default function UserManagement() {
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
             <Btn variant="outline" onClick={() => { setSetPwOpen(false); setNewPw(''); setConfirmPw(''); setShowPw(false); }}>Cancel</Btn>
             <Btn onClick={handleSetPassword}>Set Password</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {createdCreds && (
+        <Modal title="User Created — Temporary Credentials" onClose={() => setCreatedCreds(null)}>
+          <div style={{ padding: '12px 14px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8, fontSize: 13, color: '#92400E', marginBottom: 14 }}>
+            ⚠ Share this credential with the user over a secure channel (not chat/SMS). They will be required to change it on first login.
+          </div>
+          <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+            <div style={{ fontSize: 13 }}><strong>Name:</strong> {createdCreds.name}</div>
+            <div style={{ fontSize: 13 }}><strong>Login (email):</strong> {createdCreds.email}</div>
+            {createdCreds.userIdDisplay && <div style={{ fontSize: 13 }}><strong>User ID:</strong> {createdCreds.userIdDisplay}</div>}
+            <div style={{ fontSize: 13 }}>
+              <strong>Temporary Password:</strong>
+              <code style={{ marginLeft: 8, padding: '4px 8px', background: '#F8F9FA', borderRadius: 4, fontSize: 14 }}>
+                {createdCreds.tempPassword}
+              </code>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <Btn variant="outline" onClick={copyTempPw}>Copy Password</Btn>
+            <Btn onClick={() => setCreatedCreds(null)}>Done</Btn>
           </div>
         </Modal>
       )}

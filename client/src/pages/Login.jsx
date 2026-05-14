@@ -41,7 +41,9 @@ export default function Login() {
       if (data.forcePasswordChange || data.force_change_password) { navigate('/change-password'); return; }
       navigate(PORTAL_ROUTES[data.user.role] || '/');
     } catch (err) {
-      setError(err.response?.data?.message || 'Invalid credentials.');
+      // Server convention: errors are returned as { error: '…' }. Fall back to
+      // any displayMessage from the axios interceptor, then to a generic msg.
+      setError(err.response?.data?.error || err.displayMessage || 'Invalid credentials.');
     } finally { setLoading(false); }
   };
 

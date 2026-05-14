@@ -31,19 +31,22 @@ router.get('/:id/content', authenticate, async (req, res, next) => {
       include: { content: { orderBy: { orderIndex: 'asc' } } },
       orderBy: { orderIndex: 'asc' },
     });
-    const content = [];
+    // Resolve every contentUrl in parallel instead of awaiting each one
+    // sequentially — pre-fix this was N round-trips to MinIO per render.
+    const flatRows = [];
     for (const u of units) {
       for (const c of u.content) {
-        const fileUrl = await minioService.getReadUrl(c.contentUrl);
-        content.push({
-          id: c.id, unitId: u.id, week: u.orderIndex, unitTitle: u.title,
-          title: c.title, type: c.type, description: c.description,
-          fileUrl, url: fileUrl,
-          deadline: c.deadline, visible: c.isPublished !== false,
-          createdAt: c.createdAt,
-        });
+        flatRows.push({ u, c });
       }
     }
+    const fileUrls = await Promise.all(flatRows.map(({ c }) => minioService.getReadUrl(c.contentUrl)));
+    const content = flatRows.map(({ u, c }, i) => ({
+      id: c.id, unitId: u.id, week: u.orderIndex, unitTitle: u.title,
+      title: c.title, type: c.type, description: c.description,
+      fileUrl: fileUrls[i], url: fileUrls[i],
+      deadline: c.deadline, visible: c.isPublished !== false,
+      createdAt: c.createdAt,
+    }));
     res.json({ content, units });
   } catch (err) { next(err); }
 });
@@ -129,9 +132,14 @@ router.get('/:id/gradebook', authenticate, facultyOrAbove, async (req, res, next
         if (m !== undefined && m !== null) marks[x.id] = m;
       }
       const total = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-      const pct = subject.totalMarks > 0 ? (total / subject.totalMarks) * 100 : 0;
+      const pct = subject.totalMarks > 0 ? (total / subject.totalMarks) * 100 : null;
       const isPub = ['PASS', 'FAIL'].includes(e.resultStatus);
-      const grade = !isPub ? null : total < subject.passMark ? 'F' : pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 70 ? 'B+' : pct >= 60 ? 'B' : pct >= 50 ? 'C' : 'D';
+      // If the subject is mis-configured with totalMarks=0, surface null
+      // instead of forcing every student to 'D' (the bottom of the ladder).
+      const grade = !isPub ? null
+        : pct === null ? null
+        : total < subject.passMark ? 'F'
+        : pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 70 ? 'B+' : pct >= 60 ? 'B' : pct >= 50 ? 'C' : 'D';
       return {
         id: e.student.id, firstName: e.student.firstName, lastName: e.student.lastName,
         userIdDisplay: e.student.user.userIdDisplay, marks, totalMarks: total, grade,

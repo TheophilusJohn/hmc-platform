@@ -106,14 +106,27 @@ function buildGradeSummary(enrollments) {
   for (const e of enrollments) {
     const semKey = e.semesterId;
     if (!bySemester[semKey]) {
-      bySemester[semKey] = { enrollments: [], semesterName: e.semester?.name };
+      // Fall back to academicYear when the caller didn't include the semester
+      // relation; otherwise the UI shows "undefined" for every semester header.
+      const name = e.semester?.name
+        || (e.semester?.academicYear ? `Semester ${e.semester.academicYear}` : null)
+        || (e.semesterId ? `Semester ${String(e.semesterId).slice(0, 8)}` : 'Semester');
+      bySemester[semKey] = { enrollments: [], semesterName: name };
     }
     bySemester[semKey].enrollments.push(e);
   }
 
   const semesters = Object.entries(bySemester).map(([semId, data]) => {
-    const { sgpa, totalCredits, earnedCredits } = calculateSGPA(data.enrollments);
-    return { semesterId: semId, semesterName: data.semesterName, sgpa, totalCredits, earnedCredits, subjects: data.enrollments };
+    const sgpaResult = calculateSGPA(data.enrollments);
+    return {
+      semesterId: semId,
+      semesterName: data.semesterName,
+      sgpa: sgpaResult.sgpa,
+      totalCredits: sgpaResult.totalCredits,
+      creditsEarned: sgpaResult.creditsEarned,
+      transferCredits: sgpaResult.transferCredits,
+      subjects: data.enrollments,
+    };
   });
 
   const cgpa = calculateCGPA(enrollments);

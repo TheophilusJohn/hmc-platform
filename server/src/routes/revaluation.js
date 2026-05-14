@@ -9,6 +9,12 @@ const notif = require('../services/notification.service');
 router.post('/request', authenticate, requireRole('STUDENT'), async (req, res, next) => {
   try {
     const { subjectId, semesterId, reason } = req.body;
+    if (!subjectId || typeof subjectId !== 'string' || !subjectId.trim()) {
+      return res.status(400).json({ error: 'subjectId is required' });
+    }
+    if (!semesterId || typeof semesterId !== 'string' || !semesterId.trim()) {
+      return res.status(400).json({ error: 'semesterId is required' });
+    }
     const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id } });
     if (!sp) return res.status(404).json({ error: 'Student profile not found' });
 
@@ -19,6 +25,12 @@ router.post('/request', authenticate, requireRole('STUDENT'), async (req, res, n
     });
     if (!enrollment) {
       return res.status(400).json({ error: 'No graded enrollment found for this subject/semester' });
+    }
+    // Refuse if the enrollment isn't actually graded yet — pre-fix, an
+    // enrollment with iaMarks/eseMarks both null returned originalMarks=0,
+    // letting students request revaluation on un-graded work.
+    if (enrollment.iaMarks == null && enrollment.eseMarks == null) {
+      return res.status(400).json({ error: 'No marks on file for this enrollment; revaluation can only be requested after marks are released.' });
     }
     const originalMarks = (enrollment.iaMarks ?? 0) + (enrollment.eseMarks ?? 0);
 
@@ -111,19 +123,26 @@ router.put('/:id/faculty-grade', authenticate, requireRole('FACULTY', 'TEACHER_A
       return res.status(400).json({ error: 'newMarks must be a non-negative number' });
     }
 
+    // State-machine: faculty-grade requires the revaluation to be `approved`
+    // first (i.e. TA has approved the request). Otherwise any faculty could
+    // grade a freshly-submitted request without TA approval.
+    const existing = await prisma.revaluation.findUnique({
+      where: { id: req.params.id },
+      select: { subjectId: true, status: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'Revaluation not found' });
+    if (existing.status !== 'approved') {
+      return res.status(400).json({ error: `Revaluation must be in 'approved' status before faculty grading (currently ${existing.status}).` });
+    }
+
     // If the caller is FACULTY, restrict to subjects they teach
     if (req.user.role === 'FACULTY') {
-      const rev = await prisma.revaluation.findUnique({
-        where: { id: req.params.id },
-        select: { subjectId: true },
-      });
-      if (!rev) return res.status(404).json({ error: 'Revaluation not found' });
       const fp = await prisma.facultyProfile.findUnique({
         where: { userId: req.user.id },
         select: { id: true },
       });
       const subj = await prisma.subject.findUnique({
-        where: { id: rev.subjectId },
+        where: { id: existing.subjectId },
         select: { facultyId: true },
       });
       if (!fp || subj?.facultyId !== fp.id) {
@@ -142,6 +161,22 @@ router.put('/:id/faculty-grade', authenticate, requireRole('FACULTY', 'TEACHER_A
 router.put('/:id/reject', authenticate, requireRole('FACULTY', 'TEACHER_ADMIN', 'FULL_ADMIN'), async (req, res, next) => {
   try {
     const { notes } = req.body;
+    // FACULTY may only reject revaluations for subjects they teach.
+    if (req.user.role === 'FACULTY') {
+      const existing = await prisma.revaluation.findUnique({
+        where: { id: req.params.id }, select: { subjectId: true },
+      });
+      if (!existing) return res.status(404).json({ error: 'Revaluation not found' });
+      const fp = await prisma.facultyProfile.findUnique({
+        where: { userId: req.user.id }, select: { id: true },
+      });
+      const subj = await prisma.subject.findUnique({
+        where: { id: existing.subjectId }, select: { facultyId: true },
+      });
+      if (!fp || subj?.facultyId !== fp.id) {
+        return res.status(403).json({ error: 'You do not teach this subject' });
+      }
+    }
     // Revaluation has no `subject` Prisma relation — fetch the subject name separately.
     const rev = await prisma.revaluation.update({
       where: { id: req.params.id },

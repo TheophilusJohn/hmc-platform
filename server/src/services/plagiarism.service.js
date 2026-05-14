@@ -83,27 +83,34 @@ async function checkPlagiarism(submissionId, text) {
       checkExternalSources(text),
     ]);
 
-    const maxScore = Math.max(studentScore, externalResult.score || 0);
+    // Copyleaks is asynchronous: the sync call returns { scanId, score:0, status:'scanning' }
+    // and the real similarity arrives later via webhook. Avoid using `Math.max`
+    // against the placeholder 0 — that would gate "FLAGGED" only on the student
+    // score and miss external matches. Record what we know now; the webhook
+    // handler is responsible for revisiting flagStatus once the external scan
+    // completes.
+    const externalScore = externalResult.status === 'scanning' ? null : (externalResult.score || 0);
+    const effectiveScore = externalScore == null ? studentScore : Math.max(studentScore, externalScore);
 
     await prisma.plagiarismReport.upsert({
       where: { submissionId },
       create: {
         submissionId,
         studentSimilarityScore: studentScore,
-        externalSimilarityScore: externalResult.score || 0,
+        externalSimilarityScore: externalScore || 0,
         matchedSources: externalResult.sources || [],
       },
       update: {
         studentSimilarityScore: studentScore,
-        externalSimilarityScore: externalResult.score || 0,
+        externalSimilarityScore: externalScore || 0,
         matchedSources: externalResult.sources || [],
       },
     });
 
-    if (maxScore > threshold) {
+    if (effectiveScore > threshold) {
       await prisma.submission.update({
         where: { id: submissionId },
-        data: { plagiarismScore: maxScore, flagStatus: 'FLAGGED' },
+        data: { plagiarismScore: effectiveScore, flagStatus: 'FLAGGED' },
       });
 
       // Notify faculty (Notification.userId FKs to User.id, not FacultyProfile.id)
@@ -111,7 +118,7 @@ async function checkPlagiarism(submissionId, text) {
       if (facultyUserId) {
         await notif.createNotification(
           facultyUserId, 'plagiarism_flagged', 'Submission Flagged',
-          `A submission for "${submission.exam.subject?.name}" has been flagged for plagiarism (${Math.round(maxScore)}% similarity).`,
+          `A submission for "${submission.exam.subject?.name}" has been flagged for plagiarism (${Math.round(effectiveScore)}% similarity).`,
           '/faculty/exams'
         );
       }

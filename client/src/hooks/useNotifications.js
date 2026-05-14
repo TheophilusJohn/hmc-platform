@@ -43,6 +43,15 @@ export function useNotifications(user) {
       .then(res => setUnreadCount(res.data.count || 0))
       .catch(() => {});
 
+    // Seed the notifications list from the server so pre-existing unread items
+    // appear on mount; previously the list only filled from new socket events.
+    api.get('/notifications')
+      .then(res => {
+        const list = res.data?.notifications || res.data || [];
+        if (Array.isArray(list)) setNotifications(list);
+      })
+      .catch(() => {});
+
     return () => {
       socket.disconnect();
       if (socketRef.current === socket) socketRef.current = null;
@@ -50,15 +59,17 @@ export function useNotifications(user) {
     };
   }, [user?.id]);
 
+  // Schema field is `isRead` (camelCase). Pre-fix used `is_read`, so the
+  // optimistic update never matched the read-flag checks elsewhere in the UI.
   const markRead = useCallback(async (id) => {
     await api.put(`/notifications/${id}/read`);
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n));
     setUnreadCount(prev => Math.max(0, prev - 1));
   }, []);
 
   const markAllRead = useCallback(async () => {
     await api.put('/notifications/read-all');
-    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
     setUnreadCount(0);
   }, []);
 

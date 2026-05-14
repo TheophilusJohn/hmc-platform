@@ -11,11 +11,18 @@ export function BatchProgression() {
   const [running, setRunning] = useState(null);
 
   const runProgression = async (batchId) => {
+    // Progression is irreversible — confirm before firing. Pre-fix a single
+    // mis-click moved the whole batch to the next academic year.
+    const batch = batches.find(b => b.id === batchId);
+    const label = batch ? `${batch.programmeName} — ${batch.name} (Year ${batch.currentYear})` : 'this batch';
+    if (!window.confirm(`Run year-end progression for ${label}? This cannot be undone — students who pass will be advanced and flagged students will be queued for manual review.`)) {
+      return;
+    }
     setRunning(batchId);
     try {
       const { data } = await api.post(`/programmes/batches/${batchId}/progression`);
       setResult({ batchId, ...data });
-    } catch (e) { alert(e.response?.data?.message); }
+    } catch (e) { alert(e.response?.data?.error || e.response?.data?.message || 'Failed to run progression'); }
     finally { setRunning(null); }
   };
 

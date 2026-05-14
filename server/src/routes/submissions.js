@@ -59,30 +59,33 @@ router.post('/exams/:id/start', authenticate, requireRole('STUDENT'), async (req
       return res.status(400).json({ error: 'Exam window has closed' });
     }
 
-    // Check max attempts
-    const attempts = await prisma.submission.count({
-      where: { examId, studentId: studentProfile.id, status: { not: 'DRAFT' } }
-    });
-    if (attempts >= exam.maxAttempts) {
-      return res.status(400).json({ error: 'Maximum attempts reached' });
-    }
+    // Wrap the attempt-count + existing-draft check + create in a single
+    // $transaction so two concurrent /start requests can't both pass the
+    // checks and end up creating two DRAFTs for the same student/exam.
+    const submission = await prisma.$transaction(async (tx) => {
+      const existing = await tx.submission.findFirst({
+        where: { examId, studentId: studentProfile.id, status: 'DRAFT' },
+      });
+      if (existing) return { row: existing, resumed: true };
 
-    // Check no active draft submission
-    const existing = await prisma.submission.findFirst({
-      where: { examId, studentId: studentProfile.id, status: 'DRAFT' }
-    });
-    if (existing) return res.json({ submission: existing, resumed: true });
-
-    // Create draft
-    const submission = await prisma.submission.create({
-      data: {
-        examId,
-        studentId: studentProfile.id,
-        attemptNumber: attempts + 1,
-        status: 'DRAFT',
-        answers: {},
+      const attempts = await tx.submission.count({
+        where: { examId, studentId: studentProfile.id, status: { not: 'DRAFT' } },
+      });
+      if (attempts >= exam.maxAttempts) {
+        throw Object.assign(new Error('Maximum attempts reached'), { status: 400 });
       }
+      const created = await tx.submission.create({
+        data: {
+          examId,
+          studentId: studentProfile.id,
+          attemptNumber: attempts + 1,
+          status: 'DRAFT',
+          answers: {},
+        },
+      });
+      return { row: created, resumed: false };
     });
+    if (submission.resumed) return res.json({ submission: submission.row, resumed: true });
 
     // Mark session as exam session (no timeout)
     if (req.sessionId) {
@@ -108,8 +111,11 @@ router.post('/exams/:id/start', authenticate, requireRole('STUDENT'), async (req
       }));
     }
 
-    res.json({ submission, exam, questions, startedAt: submission.startedAt });
-  } catch (err) { next(err); }
+    res.json({ submission: submission.row, exam, questions, startedAt: submission.row.startedAt });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 // PUT /api/submissions/:id/autosave - only the owning student can autosave
@@ -119,11 +125,16 @@ router.put('/:id/autosave', authenticate, requireRole('STUDENT'), async (req, re
       return res.status(403).json({ error: 'This submission is not yours' });
     }
     const { answers } = req.body;
-    const submission = await prisma.submission.update({
-      where: { id: req.params.id },
+    // Refuse autosave after submit — scoped updateMany so a concurrent submit
+    // that flipped status won't be clobbered by a stale autosave.
+    const result = await prisma.submission.updateMany({
+      where: { id: req.params.id, status: 'DRAFT' },
       data: { answers, lastSavedAt: new Date() },
     });
-    res.json({ lastSavedAt: submission.lastSavedAt });
+    if (result.count === 0) {
+      return res.status(409).json({ error: 'Submission has been finalized; autosave ignored.' });
+    }
+    res.json({ lastSavedAt: new Date() });
   } catch (err) { next(err); }
 });
 
@@ -157,8 +168,11 @@ router.post('/:id/submit', authenticate, requireRole('STUDENT'), async (req, res
 
     const hasWritten = submission.exam.questions.some(q => q.type !== 'MCQ');
 
-    const updated = await prisma.submission.update({
-      where: { id: submissionId },
+    // Scoped update: only transition from DRAFT. If a concurrent submit raced
+    // ahead, this updateMany affects zero rows and we surface a 409 instead
+    // of double-flipping status/marks.
+    const txResult = await prisma.submission.updateMany({
+      where: { id: submissionId, status: 'DRAFT' },
       data: {
         answers,
         timePerQuestion,
@@ -167,6 +181,10 @@ router.post('/:id/submit', authenticate, requireRole('STUDENT'), async (req, res
         status: hasWritten ? 'SUBMITTED' : 'GRADED',
       }
     });
+    if (txResult.count === 0) {
+      return res.status(409).json({ error: 'Submission was already submitted by another request.' });
+    }
+    const updated = await prisma.submission.findUnique({ where: { id: submissionId } });
 
     // Clear exam session flag
     if (req.sessionId) {
@@ -203,17 +221,22 @@ router.put('/:id/grade', authenticate, facultyOrAbove, async (req, res, next) =>
     if (submission.flagStatus === 'FLAGGED') {
       return res.status(400).json({ error: 'Must resolve plagiarism flag before grading' });
     }
+    // Parse once and pass the validated value through — pre-fix the write used
+    // `parseFloat(marksObtained)` on the raw body again, so a null/undefined
+    // input would write NaN to the column.
+    let marksValue = null;
     if (marksObtained !== null && marksObtained !== undefined) {
       const m = parseFloat(marksObtained);
       if (isNaN(m) || m < 0) return res.status(400).json({ error: 'Marks must be a non-negative number' });
       if (m > submission.exam.totalMarks) {
         return res.status(400).json({ error: `Marks cannot exceed exam total (${submission.exam.totalMarks})` });
       }
+      marksValue = m;
     }
 
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
-      data: { marksObtained: parseFloat(marksObtained), feedback, status: 'GRADED' },
+      data: { marksObtained: marksValue, feedback, status: 'GRADED' },
     });
     res.json({ submission: updated });
   } catch (err) { next(err); }

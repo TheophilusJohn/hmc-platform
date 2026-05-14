@@ -25,11 +25,15 @@ export default function Exams() {
   const [selectedSubject, setSelectedSubject] = useState(params.get('subject') || '');
   const [examOpen, setExamOpen] = useState(false);
   const [gradingExam, setGradingExam] = useState(params.get('exam') || null);
-  const [examForm, setExamForm] = useState({
+  const EMPTY_EXAM_FORM = {
     title: '', type: 'IA', mode: 'OFFLINE', answerFormat: 'MCQ',
     subjectId: '', totalMarks: 100, passMark: 40, durationMins: 60,
     startDatetime: '', endDatetime: '', maxAttempts: 1,
-  });
+  };
+  const [examForm, setExamForm] = useState(EMPTY_EXAM_FORM);
+  // Reset the form when the modal closes so reopening doesn't show stale
+  // data from a previous (perhaps abandoned) entry.
+  const closeExamModal = () => { setExamForm(EMPTY_EXAM_FORM); setExamOpen(false); };
 
   const { data: subjects } = useApi('/subjects?mine=true');
   const { data: exams, refetch } = useApi(selectedSubject ? `/exams?subjectId=${selectedSubject}` : '/exams', [selectedSubject]);
@@ -55,6 +59,7 @@ export default function Exams() {
     try {
       await api.post('/exams', payload);
       setExamOpen(false);
+      setExamForm(EMPTY_EXAM_FORM);
       setExamForm({ title: '', type: 'IA', mode: 'OFFLINE', answerFormat: 'MCQ', subjectId: '', totalMarks: 100, passMark: 40, durationMins: 60, startDatetime: '', endDatetime: '', maxAttempts: 1 });
       refetch();
     } catch (e) {
@@ -115,7 +120,7 @@ export default function Exams() {
       </Card>
 
       {examOpen && (
-        <Modal title="Create Exam" onClose={() => setExamOpen(false)} wide>
+        <Modal title="Create Exam" onClose={closeExamModal} wide>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
             <div style={{ gridColumn: '1/-1' }}>
               <Input label="Exam Title" value={examForm.title} onChange={e => setExamForm(f => ({ ...f, title: e.target.value }))} />
@@ -132,7 +137,7 @@ export default function Exams() {
             <Input label="End Date/Time" type="datetime-local" value={examForm.endDatetime} onChange={e => setExamForm(f => ({ ...f, endDatetime: e.target.value }))} />
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-            <Btn variant="outline" onClick={() => setExamOpen(false)}>Cancel</Btn>
+            <Btn variant="outline" onClick={closeExamModal}>Cancel</Btn>
             <Btn onClick={handleCreateExam}>Create Exam</Btn>
           </div>
         </Modal>

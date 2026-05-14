@@ -75,19 +75,39 @@ router.get('/batches', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const BATCH_STATUSES = new Set(['ACTIVE', 'INACTIVE', 'COMPLETED']);
+
 router.post('/:id/batches', authenticate, adminOnly, async (req, res, next) => {
   try {
     const { name, startYear, endYear, currentYear, maxIntake, status } = req.body;
     if (!name) return res.status(400).json({ error: 'Batch name is required' });
+
+    const sy = toInt(startYear, new Date().getFullYear());
+    const ey = toInt(endYear, new Date().getFullYear() + 3);
+    if (!Number.isInteger(sy) || sy < 1900 || sy > 2200) {
+      return res.status(400).json({ error: 'startYear must be a valid year' });
+    }
+    if (!Number.isInteger(ey) || ey <= sy) {
+      return res.status(400).json({ error: 'endYear must be greater than startYear' });
+    }
+    const cy = toInt(currentYear, 1);
+    if (!Number.isInteger(cy) || cy < 1 || cy > (ey - sy + 1)) {
+      return res.status(400).json({ error: 'currentYear must be between 1 and the batch duration' });
+    }
+    const normStatus = String(status || 'ACTIVE').toUpperCase();
+    if (!BATCH_STATUSES.has(normStatus)) {
+      return res.status(400).json({ error: `status must be one of: ${[...BATCH_STATUSES].join(', ')}` });
+    }
+
     const batch = await prisma.batch.create({
       data: {
         name,
         programmeId: req.params.id,
-        startYear: toInt(startYear, new Date().getFullYear()),
-        endYear: toInt(endYear, new Date().getFullYear() + 3),
-        currentYear: toInt(currentYear, 1),
+        startYear: sy,
+        endYear: ey,
+        currentYear: cy,
         maxIntake: toInt(maxIntake, null),
-        status: status || 'ACTIVE',
+        status: normStatus,
       },
     });
     res.status(201).json({ batch });
@@ -128,15 +148,32 @@ router.post('/batches/:id/progression', authenticate, adminOrTA, async (req, res
       include: { enrollments: { include: { subject: true } } },
     });
 
+    // Refuse to "progress" a batch with no students — pre-fix this returned
+    // total:0 with no warning, which silently advanced the empty batch's
+    // currentYear via the caller's update.
+    if (students.length === 0) {
+      return res.status(400).json({ error: 'No students in this batch — refusing to run progression.' });
+    }
+
+    // Also refuse if every student has only PENDING enrollments — there's
+    // nothing to evaluate, and auto-approving them is misleading.
+    const haveAnyResolved = students.some(s => s.enrollments.some(e => e.resultStatus === 'PASS' || e.resultStatus === 'FAIL'));
+    if (!haveAnyResolved) {
+      return res.status(400).json({ error: 'No graded enrollments in this batch yet — progression cannot be evaluated.' });
+    }
+
     const results = students.map(s => {
       const failed = s.enrollments.filter(e => e.resultStatus === 'FAIL');
-      const passed = failed.length === 0;
+      // Withheld results also need review — not auto-progressed alongside PASS.
+      const withheld = s.enrollments.filter(e => e.resultStatus === 'WITHHELD' || e.resultStatus === 'PENDING');
+      const needsReview = failed.length > 0 || withheld.length > 0;
       return {
         studentId: s.id,
         name: `${s.firstName} ${s.lastName}`,
-        passed,
+        passed: !needsReview,
         failedSubjects: failed.length,
-        recommendation: passed ? 'PROGRESS' : 'REVIEW',
+        withheldOrPending: withheld.length,
+        recommendation: needsReview ? 'REVIEW' : 'PROGRESS',
       };
     });
 

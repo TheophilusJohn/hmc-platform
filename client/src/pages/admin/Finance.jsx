@@ -92,8 +92,15 @@ export default function Finance() {
   };
 
   // ===== Handlers =====
+  // Single in-flight token per handler so a fast double-click can't double-submit
+  // payments/waivers/charges (the kind of mistake that costs an admin time).
+  const [busy, setBusy] = useState({ pay: false, waiver: false, preview: false, bulk: false, single: false });
+  const setBusyKey = (k, v) => setBusy(b => ({ ...b, [k]: v }));
+
   const handleRecordPayment = async () => {
+    if (busy.pay) return;
     if (!payForm.studentId || !payForm.amount) { alert('Pick a student and enter amount.'); return; }
+    setBusyKey('pay', true);
     try {
       const { data } = await api.post('/payments/offline', payForm);
       alert(`Payment recorded. Receipt: ${data?.receiptNo || '—'}`);
@@ -102,11 +109,14 @@ export default function Finance() {
       refetchOutstanding();
       if (selectedStudent?.id === payStudent?.id) refetchLedger();
     } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
+    finally { setBusyKey('pay', false); }
   };
 
   const handleApplyWaiver = async () => {
+    if (busy.waiver) return;
     if (!waiverForm.studentId || !waiverForm.ledgerId) { alert('Pick a student and ledger entry first.'); return; }
     if (waiverForm.waiverType !== 'FULL' && !waiverForm.amountOrPercent) { alert('Enter the amount or percentage.'); return; }
+    setBusyKey('waiver', true);
     try {
       await api.post('/waivers', waiverForm);
       alert('Waiver applied.');
@@ -115,17 +125,23 @@ export default function Finance() {
       refetchOutstanding();
       refetchWaiverLedger();
     } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
+    finally { setBusyKey('waiver', false); }
   };
 
   const handlePreviewBulkCharge = async () => {
+    if (busy.preview) return;
     if (!bulkChargeForm.feeTypeId) { alert('Pick a fee type.'); return; }
+    setBusyKey('preview', true);
     try {
       const { data } = await api.post(`/fee-types/${bulkChargeForm.feeTypeId}/bulk-charge/preview`, { scope: bulkChargeForm.scope });
       setBulkPreview(data);
     } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
+    finally { setBusyKey('preview', false); }
   };
 
   const handleApplyBulkCharge = async () => {
+    if (busy.bulk) return;
+    setBusyKey('bulk', true);
     try {
       const { data } = await api.post(`/fee-types/${bulkChargeForm.feeTypeId}/bulk-charge`, { scope: bulkChargeForm.scope });
       alert(`Charged ${data?.created || 0} students.`);
@@ -133,10 +149,13 @@ export default function Finance() {
       setBulkChargeForm({ scope: 'all', feeTypeId: '' });
       refetchOutstanding();
     } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
+    finally { setBusyKey('bulk', false); }
   };
 
   const handleSingleCharge = async () => {
+    if (busy.single) return;
     if (!singleChargeForm.studentId || !singleChargeForm.feeTypeId) { alert('Pick a student and fee type.'); return; }
+    setBusyKey('single', true);
     try {
       await api.post(`/fee-types/${singleChargeForm.feeTypeId}/charge-student`, singleChargeForm);
       alert('Fee charged to student.');
@@ -145,6 +164,7 @@ export default function Finance() {
       refetchOutstanding();
       if (selectedStudent?.id === chargeStudent?.id) refetchLedger();
     } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
+    finally { setBusyKey('single', false); }
   };
 
   // ===== Columns =====
@@ -237,7 +257,7 @@ export default function Finance() {
                 </div>
               </div>
             )}
-            {payStudent && <Btn style={{ marginTop: 16 }} onClick={handleRecordPayment}>Record Payment & Generate Receipt</Btn>}
+            {payStudent && <Btn style={{ marginTop: 16 }} onClick={handleRecordPayment} disabled={busy.pay}>{busy.pay ? 'Recording…' : 'Record Payment & Generate Receipt'}</Btn>}
           </div>
         )}
 
@@ -262,7 +282,7 @@ export default function Finance() {
                 <div style={{ marginTop: 12, padding: '10px 12px', background: '#FFFBF0', border: '1px solid #F5E6BE', borderRadius: 8, fontSize: 13, color: '#92400E' }}>
                   Student will be notified instantly when waiver is applied.
                 </div>
-                <Btn style={{ marginTop: 16 }} onClick={handleApplyWaiver}>Apply Waiver</Btn>
+                <Btn style={{ marginTop: 16 }} onClick={handleApplyWaiver} disabled={busy.waiver}>{busy.waiver ? 'Applying…' : 'Apply Waiver'}</Btn>
               </>
             )}
           </div>
@@ -286,11 +306,11 @@ export default function Finance() {
                     <div style={{ fontWeight: 600, color: '#0F2B4A' }}>Preview: {bulkPreview.count} student{bulkPreview.count === 1 ? '' : 's'} · Total ₹{Number(bulkPreview.total).toLocaleString()}</div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                       <Btn variant="outline" size="sm" onClick={() => setBulkPreview(null)}>Cancel</Btn>
-                      <Btn size="sm" onClick={handleApplyBulkCharge}>Confirm & Apply</Btn>
+                      <Btn size="sm" onClick={handleApplyBulkCharge} disabled={busy.bulk}>{busy.bulk ? 'Applying…' : 'Confirm & Apply'}</Btn>
                     </div>
                   </div>
                 ) : (
-                  <Btn variant="outline" onClick={handlePreviewBulkCharge}>Preview Recipients</Btn>
+                  <Btn variant="outline" onClick={handlePreviewBulkCharge} disabled={busy.preview}>{busy.preview ? '…' : 'Preview Recipients'}</Btn>
                 )}
               </div>
             )}
@@ -306,7 +326,7 @@ export default function Finance() {
                       options={[{ value: '', label: '— Pick a fee type —' }, ...feeTypeOpts]} />
                     <Input label="Custom Amount (optional — leave blank to use fee type default)" type="number" value={singleChargeForm.customAmount} onChange={e => setSingleChargeForm(f => ({ ...f, customAmount: e.target.value }))} />
                     <Input label="Custom Description (optional)" value={singleChargeForm.customDescription} onChange={e => setSingleChargeForm(f => ({ ...f, customDescription: e.target.value }))} />
-                    <Btn onClick={handleSingleCharge}>Apply Charge</Btn>
+                    <Btn onClick={handleSingleCharge} disabled={busy.single}>{busy.single ? 'Applying…' : 'Apply Charge'}</Btn>
                   </>
                 )}
               </div>

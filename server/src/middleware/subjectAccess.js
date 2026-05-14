@@ -12,28 +12,27 @@ async function canAccessSubject(user, subjectId) {
   if (!user || !subjectId) return false;
   if (['FULL_ADMIN', 'TEACHER_ADMIN'].includes(user.role)) return true;
 
-  const subj = await prisma.subject.findUnique({
-    where: { id: subjectId },
-    select: { facultyId: true, status: true },
-  });
-  if (!subj || String(subj.status || 'active').toLowerCase() !== 'active') return false;
-
+  // Single joined query — pre-fix this took 3 sequential round-trips on every
+  // request to a subject-scoped endpoint. authenticate has already confirmed
+  // user.status === 'ACTIVE' so we only need to verify the subject + profile link.
   if (user.role === 'FACULTY') {
-    const fp = await prisma.facultyProfile.findUnique({
-      where: { userId: user.id },
-      select: { id: true, user: { select: { status: true } } },
+    const subj = await prisma.subject.findFirst({
+      where: {
+        id: subjectId,
+        status: 'active',
+        faculty: { userId: user.id },
+      },
+      select: { id: true },
     });
-    if (!fp || fp.user?.status !== 'ACTIVE') return false;
-    return fp.id === subj.facultyId;
+    return !!subj;
   }
   if (user.role === 'STUDENT') {
-    const sp = await prisma.studentProfile.findUnique({
-      where: { userId: user.id },
-      select: { id: true, user: { select: { status: true } } },
-    });
-    if (!sp || sp.user?.status !== 'ACTIVE') return false;
     const enr = await prisma.studentSubjectEnrollment.findFirst({
-      where: { studentId: sp.id, subjectId },
+      where: {
+        subjectId,
+        student: { userId: user.id },
+        subject: { status: 'active' },
+      },
       select: { id: true },
     });
     return !!enr;

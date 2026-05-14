@@ -16,7 +16,11 @@ export default function CourseContent() {
   const [params] = useSearchParams();
   const [selectedSubject, setSelectedSubject] = useState(params.get('subject') || '');
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: '', type: 'lecture', description: '', week: 1, url: '', file: null, visibleFrom: '', deadline: '' });
+  const EMPTY_CC_FORM = { title: '', type: 'lecture', description: '', week: 1, url: '', file: null, visibleFrom: '', deadline: '' };
+  const [form, setForm] = useState(EMPTY_CC_FORM);
+  // Reset on close — File references are heap objects; leaving them around in
+  // state pins the upload buffer until garbage collection.
+  const closeCCModal = () => { setForm(EMPTY_CC_FORM); setOpen(false); };
 
   const { data: subjects } = useApi('/subjects?mine=true');
   const { data: content, refetch } = useApi(selectedSubject ? `/subjects/${selectedSubject}/content` : null, [selectedSubject]);
@@ -29,7 +33,7 @@ export default function CourseContent() {
     if (form.file) fd.append('file', form.file);
     await api.post(`/subjects/${selectedSubject}/content`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
     setOpen(false);
-    setForm({ title: '', type: 'lecture', description: '', week: 1, url: '', file: null, visibleFrom: '', deadline: '' });
+    setForm(EMPTY_CC_FORM);
     refetch();
   };
 
@@ -96,7 +100,7 @@ export default function CourseContent() {
       </Card>
 
       {open && (
-        <Modal title="Add Content" onClose={() => setOpen(false)}>
+        <Modal title="Add Content" onClose={closeCCModal}>
           <div style={{ display: 'grid', gap: 14 }}>
             <Input label="Title" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} />
             <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value, file: null, url: '' }))} options={CONTENT_TYPES} />
@@ -116,7 +120,7 @@ export default function CourseContent() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-            <Btn variant="outline" onClick={() => setOpen(false)}>Cancel</Btn>
+            <Btn variant="outline" onClick={closeCCModal}>Cancel</Btn>
             <Btn onClick={handleUpload}>Upload</Btn>
           </div>
         </Modal>

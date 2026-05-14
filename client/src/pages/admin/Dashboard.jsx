@@ -12,8 +12,16 @@ export default function AdminDashboard() {
   const { data: atRisk } = useApi('at-risk', '/reports/at-risk');
 
   const completion = completionData?.percent || 0;
-  const pipelineCounts = Array.isArray(pipeline?.counts) ? pipeline.counts : [];
-  const atRiskList = Array.isArray(atRisk) ? atRisk : [];
+  // Server returns `byStage: { received: N, docs_review: N, ... }` (an object),
+  // not an array of `{stage,count}` rows. Convert to rows here so the panel
+  // actually shows pipeline data instead of "No data yet".
+  const pipelineCounts = pipeline?.byStage
+    ? Object.entries(pipeline.byStage).map(([stage, count]) => ({ stage, count }))
+    : (Array.isArray(pipeline?.counts) ? pipeline.counts : []);
+  // /reports/at-risk returns {summary, rows, columns} — the count is rows.length.
+  const atRiskList = Array.isArray(atRisk)
+    ? atRisk
+    : (Array.isArray(atRisk?.rows) ? atRisk.rows : []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>

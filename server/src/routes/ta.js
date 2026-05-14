@@ -8,13 +8,30 @@ const { adminOrTA } = require('../middleware/rbac');
 async function computeBelowAttendance() {
   const students = await prisma.studentProfile.findMany({
     where: { user: { status: 'ACTIVE' } },
-    select: { id: true, attendance: { select: { status: true } } },
+    select: {
+      id: true,
+      batchId: true,
+      attendance: { select: { status: true } },
+    },
   });
+  // Only count students whose batch has had any attendance recorded — a brand-new
+  // batch shouldn't show every student as "below attendance" before any classes
+  // happen. Conversely, a student in an active batch with zero personal records
+  // means they've been absent every session that was marked.
+  // Determine "active" batches: at least one student in the batch has attendance.
+  const batchesWithAttendance = new Set();
+  for (const s of students) {
+    if (s.attendance.length > 0 && s.batchId) batchesWithAttendance.add(s.batchId);
+  }
   let low = 0;
   for (const s of students) {
-    if (s.attendance.length === 0) continue;
-    const present = s.attendance.filter(a => a.status === 'PRESENT').length;
-    const rate = (present / s.attendance.length) * 100;
+    // Skip if the student's batch has no recorded attendance at all (= no
+    // classes happened yet) so a new batch doesn't flag everyone immediately.
+    if (!s.batchId || !batchesWithAttendance.has(s.batchId)) continue;
+    const present = s.attendance.filter(a => a.status === 'PRESENT' || a.status === 'LATE').length;
+    const total = s.attendance.length;
+    // A student with zero personal records in an active batch counts as 0%.
+    const rate = total === 0 ? 0 : (present / total) * 100;
     if (rate < 75) low++;
   }
   return low;

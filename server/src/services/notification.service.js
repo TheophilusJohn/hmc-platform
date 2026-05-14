@@ -19,11 +19,19 @@ async function createNotification(userId, type, title, body, link = null) {
 }
 
 async function sendFeeReminder(studentUserId, feeDetails) {
+  const cur = String(feeDetails.currency || 'INR').toUpperCase();
+  const symbol = cur === 'INR' ? '₹' : cur === 'USD' ? '$' : `${cur} `;
+  const amount = Number(feeDetails.amount || 0).toLocaleString('en-IN', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  const due = feeDetails.dueDate
+    ? new Date(feeDetails.dueDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })
+    : 'shortly';
   return createNotification(
     studentUserId,
     'fee_reminder',
     'Fee Payment Reminder',
-    `You have an outstanding balance of ${feeDetails.currency === 'INR' ? '₹' : '$'}${feeDetails.amount}. Due: ${feeDetails.dueDate}.`,
+    `You have an outstanding balance of ${symbol}${amount}. Due: ${due}.`,
     '/student/fees'
   );
 }

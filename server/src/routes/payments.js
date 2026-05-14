@@ -50,11 +50,12 @@ async function createPaymentWithRetry(buildData, ledgerUpdate, maxRetries = 5) {
   }
 }
 
-// GET /api/students/:id/payments — admin/TA/admissions, or the student themselves
+// GET /api/students/:id/payments — admin/TA/admissions, or the student themselves.
+// FACULTY has no business reading another student's payment history.
 router.get('/students/:id/payments', authenticate, async (req, res, next) => {
   try {
     const role = req.user.role;
-    const isStaff = ['FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER', 'FACULTY'].includes(role);
+    const isStaff = ['FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER'].includes(role);
     if (!isStaff) {
       if (role !== 'STUDENT') return res.status(403).json({ error: 'Forbidden' });
       const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id }, select: { id: true } });
@@ -121,16 +122,28 @@ router.post('/offline', authenticate,
         }),
         ledgerId
           ? async (tx) => {
-              // Atomic decrement guards against read-modify-write races
+              // Reject overpayment inside the transaction (the pre-flight check
+              // above can race against concurrent payments on the same ledger).
+              const pre = await tx.studentFeeLedger.findUnique({
+                where: { id: ledgerId }, select: { balance: true },
+              });
+              const remaining = new Prisma.Decimal(pre.balance);
+              const amountDec = new Prisma.Decimal(amount);
+              if (amountDec.gt(remaining)) {
+                throw Object.assign(new Error(`Amount exceeds ledger balance (${remaining.toString()})`), { status: 400 });
+              }
               const updated = await tx.studentFeeLedger.update({
                 where: { id: ledgerId },
                 data: { balance: { decrement: amount } },
                 select: { balance: true },
               });
-              const newBalance = Number(updated.balance);
+              // PAID when fully cleared, PARTIAL otherwise. UNPAID is reserved
+              // for "balance > 0 AND no payments ever made" — a state that
+              // can't arise from a successful payment.
+              const newBalance = new Prisma.Decimal(updated.balance);
               await tx.studentFeeLedger.update({
                 where: { id: ledgerId },
-                data: { status: newBalance <= 0 ? 'PAID' : 'PARTIAL' },
+                data: { status: newBalance.lte(0) ? 'PAID' : 'PARTIAL' },
               });
             }
           : null
@@ -309,7 +322,14 @@ router.post('/razorpay/verify', authenticate, requireRole('STUDENT'), async (req
       }),
       ledgerId
         ? async (tx) => {
-            // Atomic decrement guards against read-modify-write races
+            // Reject overpayment in-transaction (race-safe vs. concurrent verifies).
+            const pre = await tx.studentFeeLedger.findUnique({
+              where: { id: ledgerId }, select: { balance: true },
+            });
+            const remaining = new Prisma.Decimal(pre.balance);
+            if (amountDec.gt(remaining)) {
+              throw Object.assign(new Error(`Gateway amount exceeds remaining ledger balance (${remaining.toString()})`), { status: 400 });
+            }
             const updated = await tx.studentFeeLedger.update({
               where: { id: ledgerId },
               data: { balance: { decrement: amountDec } },

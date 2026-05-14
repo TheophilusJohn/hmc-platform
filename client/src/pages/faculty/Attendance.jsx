@@ -66,7 +66,14 @@ export default function Attendance() {
             ))}
           </div>
           {mode === 'class' && (
-            <select value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)}
+            <select value={selectedSubject} onChange={e => {
+              // Clear records when switching subjects — pre-fix, stale studentId
+              // entries from the previous subject would be saved against the new
+              // subjectId (most of those students aren't enrolled in it).
+              setSelectedSubject(e.target.value);
+              setRecords({});
+              setSavedAt(null);
+            }}
               style={{ padding: '8px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 13, background: '#fff' }}>
               <option value="">Select subject…</option>
               {(subjects?.subjects || []).map(s => <option key={s.id} value={s.id}>{s.code} — {s.name}</option>)}

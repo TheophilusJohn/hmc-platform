@@ -84,75 +84,105 @@ function initCronJobs() {
     } catch (err) { console.error('CRON hostel charge failed:', err); }
   }, { timezone: TZ });
 
-  // Daily at 08:00 IST: check overdue installments
+  // Daily at 08:00 IST: check overdue installments. Anchors "overdue" to the
+  // end-of-day-IST of the installment's dueDate so a single global UTC `today`
+  // doesn't roll a row over 5h30m early. Also transitions OVERDUE → ACTIVE
+  // when no overdue rows remain (was previously a one-way flip).
   cron.schedule('0 8 * * *', async () => {
     console.log('CRON: Checking overdue installments');
     try {
       const plans = await prisma.installmentPlan.findMany({
-        where: { status: 'ACTIVE' },
+        where: { status: { in: ['ACTIVE', 'OVERDUE'] } },
         include: { student: { include: { user: true } } },
       });
 
+      // "Today" in IST as a UTC instant representing the IST end-of-day boundary.
+      const today = nowInIST();
+      const endOfTodayIST = istBusinessDate(today.year, today.monthIndex, today.day + 1); // midnight of next IST day
+
       for (const plan of plans) {
         const schedule = plan.schedule || [];
-        const today = new Date();
         let hasOverdue = false;
         for (const inst of schedule) {
-          if (new Date(inst.dueDate) < today && inst.status !== 'paid') {
-            hasOverdue = true;
-            break;
+          if (!inst.dueDate) continue;
+          // Compare against IST end-of-day: an installment due 2025-05-14 IST is
+          // not overdue until 2025-05-15 00:00 IST.
+          const dueIST = new Date(inst.dueDate);
+          if (dueIST < endOfTodayIST && String(inst.status).toLowerCase() !== 'paid') {
+            // Only count as overdue once IST end-of-day has actually passed.
+            if (dueIST.getTime() + (24 * 60 * 60 * 1000) <= endOfTodayIST.getTime()) {
+              hasOverdue = true;
+              break;
+            }
           }
         }
-        if (hasOverdue && plan.status !== 'OVERDUE') {
-          await prisma.installmentPlan.update({ where: { id: plan.id }, data: { status: 'OVERDUE' } });
+        const desired = hasOverdue ? 'OVERDUE' : 'ACTIVE';
+        if (plan.status !== desired) {
+          await prisma.installmentPlan.update({ where: { id: plan.id }, data: { status: desired } });
         }
       }
     } catch (err) { console.error('CRON installment check failed:', err); }
   }, { timezone: TZ });
 
-  // Daily at 09:00 IST: check attendance thresholds and flag at-risk students
+  // Daily at 09:00 IST: check attendance thresholds and flag at-risk students.
+  // Single grouped query instead of N per-student round-trips.
   cron.schedule('0 9 * * *', async () => {
     console.log('CRON: Checking attendance thresholds');
     try {
       const threshold = 75;
-      const students = await prisma.user.findMany({
-        where: { role: 'STUDENT', status: 'ACTIVE' },
-        include: { studentProfile: true },
+      // ONE query: pct per (studentId, subjectId). Filter to below-threshold rows.
+      const rows = await prisma.$queryRaw`
+        SELECT "studentId",
+          COUNT(*) FILTER (WHERE 1=1) AS total,
+          COUNT(*) FILTER (WHERE status IN ('PRESENT','LATE')) AS present,
+          "subjectId"
+        FROM "Attendance"
+        GROUP BY "studentId", "subjectId"
+        HAVING COUNT(*) > 0
+          AND (COUNT(*) FILTER (WHERE status IN ('PRESENT','LATE')))::float / COUNT(*) * 100 < ${threshold}
+      `;
+
+      // Build studentProfileId → count of below-threshold subjects.
+      const bySp = new Map();
+      for (const r of rows) {
+        bySp.set(r.studentId, (bySp.get(r.studentId) || 0) + 1);
+      }
+
+      if (bySp.size === 0) return;
+      // Resolve studentProfile.id → user.id in one query.
+      const profiles = await prisma.studentProfile.findMany({
+        where: { id: { in: [...bySp.keys()] } },
+        select: { id: true, userId: true },
       });
-
-      for (const student of students) {
-        if (!student.studentProfile) continue;
-        const subjectAttendance = await prisma.$queryRaw`
-          SELECT "subjectId",
-            ROUND(SUM(CASE WHEN status IN ('PRESENT','LATE') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as pct
-          FROM "Attendance"
-          WHERE "studentId" = ${student.studentProfile.id}
-          GROUP BY "subjectId"
-          HAVING ROUND(SUM(CASE WHEN status IN ('PRESENT','LATE') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) < ${threshold}
-        `;
-
-        if (subjectAttendance.length > 0) {
+      for (const p of profiles) {
+        const count = bySp.get(p.id);
+        if (!count) continue;
+        try {
           await notif.createNotification(
-            student.id,
+            p.userId,
             'attendance_warning',
             'Attendance Warning',
-            `Your attendance is below ${threshold}% in ${subjectAttendance.length} subject(s). Please attend classes regularly.`,
+            `Your attendance is below ${threshold}% in ${count} subject(s). Please attend classes regularly.`,
             '/student/timetable'
           );
-        }
+        } catch (_e) {}
       }
     } catch (err) { console.error('CRON attendance check failed:', err); }
   }, { timezone: TZ });
 
-  // Daily at 10:00 IST: send marks deadline reminders
+  // Daily at 10:00 IST: send marks deadline reminders. Anchor the 3-day window
+  // to IST calendar days (not a rolling 72h) so reminders fire at predictable
+  // times relative to local end-of-day.
   cron.schedule('0 10 * * *', async () => {
     console.log('CRON: Sending marks deadline reminders');
     try {
-      const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+      const today = nowInIST();
+      const startIST = istBusinessDate(today.year, today.monthIndex, today.day);
+      const threeDaysOutIST = istBusinessDate(today.year, today.monthIndex, today.day + 3);
       const upcomingDeadlines = await prisma.semester.findMany({
         where: {
           status: 'ACTIVE',
-          marksDeadline: { gte: new Date(), lte: threeDaysFromNow },
+          marksDeadline: { gte: startIST, lte: threeDaysOutIST },
         },
         include: { subjects: { include: { faculty: { include: { user: true } } } } },
       });

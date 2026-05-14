@@ -12,7 +12,13 @@ async function authenticate(req, res, next) {
     const token = authHeader.split(' ')[1];
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+      // Pin algorithm + verify iss/aud so tokens minted for a different
+      // service (or with no claim discipline at all) are rejected.
+      decoded = jwt.verify(token, process.env.JWT_SECRET, {
+        algorithms: ['HS256'],
+        issuer: 'hmc-portal',
+        audience: 'hmc-portal-client',
+      });
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ error: 'Token expired', code: 'token_expired' });

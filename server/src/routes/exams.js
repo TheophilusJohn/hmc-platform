@@ -84,12 +84,28 @@ router.post('/', authenticate, facultyOrAbove, async (req, res, next) => {
       }
     }
 
+    // Whitelist Exam fields — never spread req.body. Pre-fix a faculty could
+    // re-assign their exam to another subject (or set arbitrary timestamps, etc.)
+    // simply by including the field in the create payload.
+    const EXAM_CREATE_FIELDS = [
+      'subjectId', 'title', 'totalMarks', 'passMark',
+      'startDatetime', 'endDatetime', 'durationMins',
+      'maxAttempts', 'attemptScoring', 'status',
+    ];
+    const safeData = {};
+    for (const k of EXAM_CREATE_FIELDS) {
+      if (examData[k] === undefined) continue;
+      if (k === 'startDatetime' || k === 'endDatetime') safeData[k] = new Date(examData[k]);
+      else if (k === 'totalMarks' || k === 'passMark' || k === 'durationMins' || k === 'maxAttempts') {
+        safeData[k] = parseInt(examData[k], 10);
+      } else safeData[k] = examData[k];
+    }
+    if (type) safeData.type = type;
+    if (mode) safeData.mode = mode;
+    if (answerFormat) safeData.answerFormat = answerFormat;
     const exam = await prisma.exam.create({
       data: {
-        ...examData,
-        ...(type && { type }),
-        ...(mode && { mode }),
-        ...(answerFormat && { answerFormat }),
+        ...safeData,
         ...(settings && { settings: { create: settings } }),
       },
       include: { settings: true },
@@ -97,6 +113,15 @@ router.post('/', authenticate, facultyOrAbove, async (req, res, next) => {
     res.status(201).json({ exam });
   } catch (err) { next(err); }
 });
+
+const EXAM_UPDATE_FIELDS = [
+  // subjectId intentionally NOT updatable — re-assigning an exam to a different
+  // subject is a privilege escalation vector for FACULTY.
+  'title', 'totalMarks', 'passMark',
+  'startDatetime', 'endDatetime', 'durationMins',
+  'maxAttempts', 'attemptScoring', 'status',
+  'type', 'mode', 'answerFormat',
+];
 
 router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
@@ -106,10 +131,20 @@ router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
     if (!(await canAccessSubject(req.user, existing.subjectId))) {
       return res.status(403).json({ error: 'You do not teach this subject' });
     }
+    const safeUpdate = {};
+    for (const k of EXAM_UPDATE_FIELDS) {
+      if (examData[k] === undefined) continue;
+      if (k === 'startDatetime' || k === 'endDatetime') safeUpdate[k] = new Date(examData[k]);
+      else if (k === 'totalMarks' || k === 'passMark' || k === 'durationMins' || k === 'maxAttempts') {
+        safeUpdate[k] = parseInt(examData[k], 10);
+      } else if (['type', 'mode', 'answerFormat'].includes(k)) {
+        safeUpdate[k] = String(examData[k]).toUpperCase();
+      } else safeUpdate[k] = examData[k];
+    }
     const exam = await prisma.exam.update({
       where: { id: req.params.id },
       data: {
-        ...examData,
+        ...safeUpdate,
         ...(settings && { settings: { upsert: { create: settings, update: settings } } }),
       },
     });
@@ -135,26 +170,70 @@ router.post('/:id/publish', authenticate, facultyOrAbove, async (req, res, next)
 router.post('/:id/release-results', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const examId = req.params.id;
-    const existing = await prisma.exam.findUnique({ where: { id: examId }, select: { subjectId: true } });
+    const existing = await prisma.exam.findUnique({ where: { id: examId }, select: { subjectId: true, totalMarks: true, passMark: true } });
     if (!existing) return res.status(404).json({ error: 'Exam not found' });
     if (!(await canAccessSubject(req.user, existing.subjectId))) {
       return res.status(403).json({ error: 'You do not teach this subject' });
     }
+
+    const subject = await prisma.subject.findUnique({
+      where: { id: existing.subjectId },
+      select: { totalMarks: true, passMark: true, semesterId: true },
+    });
+    const { percentToGrade } = require('../utils/cgpa');
+
+    // Release inside a transaction so submission flip + enrollment update
+    // either both land or both roll back. Previously only Submission.status was
+    // updated → marksheets never reflected released results.
     const submissions = await prisma.submission.findMany({
       where: { examId, status: 'GRADED' },
       include: { student: { include: { user: true } } },
     });
 
-    // Update to released
-    await prisma.submission.updateMany({ where: { examId, status: 'GRADED' }, data: { status: 'RELEASED' } });
+    await prisma.$transaction(async (tx) => {
+      await tx.submission.updateMany({ where: { examId, status: 'GRADED' }, data: { status: 'RELEASED' } });
+      // Move the exam itself to `closed` so the FE state machine knows it's
+      // no longer accepting submissions / re-grades.
+      await tx.exam.update({ where: { id: examId }, data: { status: 'closed' } });
+
+      // For each released submission, also flip the matching enrollment row
+      // so the marksheet/CGPA see the result. We only have one Exam per Subject
+      // path here; map submission.marksObtained → grade + resultStatus on
+      // StudentSubjectEnrollment for (studentId, subjectId, semesterId).
+      for (const sub of submissions) {
+        if (sub.marksObtained == null || !subject) continue;
+        const enrollment = await tx.studentSubjectEnrollment.findFirst({
+          where: { studentId: sub.studentId, subjectId: existing.subjectId, semesterId: subject.semesterId },
+        });
+        if (!enrollment) continue;
+        // Total = IA already in enrollment + ESE just released. Don't overwrite
+        // an enrollment that already has totalMarks (e.g. manually entered) —
+        // only set if it's null.
+        const ia = enrollment.iaMarks ?? 0;
+        const ese = sub.marksObtained;
+        const total = ia + ese;
+        const pct = subject.totalMarks > 0 ? (total / subject.totalMarks) * 100 : 0;
+        const grade = (total < subject.passMark) ? 'F' : percentToGrade(pct);
+        await tx.studentSubjectEnrollment.update({
+          where: { id: enrollment.id },
+          data: {
+            eseMarks: enrollment.eseMarks ?? ese,
+            totalMarks: total,
+            grade,
+            resultStatus: grade === 'F' ? 'FAIL' : 'PASS',
+          },
+        });
+      }
+    });
 
     // Notify students
     const { createNotification } = require('../services/notification.service');
     const exam = await prisma.exam.findUnique({ where: { id: examId }, include: { subject: true } });
-
     for (const sub of submissions) {
       if (sub.student?.user) {
-        await createNotification(sub.student.user.id, 'grade_released', 'Results Released', `Results for ${exam?.subject?.name} - ${exam?.title} are now available.`, '/student/marksheet');
+        try {
+          await createNotification(sub.student.user.id, 'grade_released', 'Results Released', `Results for ${exam?.subject?.name} - ${exam?.title} are now available.`, '/student/marksheet');
+        } catch (_e) {}
       }
     }
 
@@ -196,7 +275,9 @@ router.get('/my-exams', authenticate, async (req, res, next) => {
     const subjectIds = enrollments.map(e => e.subjectId);
     if (subjectIds.length === 0) return res.json({ exams: [] });
     const now = new Date();
-    const where = { subjectId: { in: subjectIds } };
+    // Students only see published exams (or closed ones for history). Draft
+    // exams would otherwise leak the title and question count before release.
+    const where = { subjectId: { in: subjectIds }, status: { in: ['published', 'closed'] } };
     const exams = await prisma.exam.findMany({
       where, orderBy: { startDatetime: 'asc' },
       include: {
@@ -210,7 +291,9 @@ router.get('/my-exams', authenticate, async (req, res, next) => {
       if (sub && (sub.status === 'GRADED' || sub.status === 'RELEASED' || sub.status === 'SUBMITTED')) {
         myStatus = 'completed';
       } else if (e.endDatetime && now > e.endDatetime) {
-        myStatus = sub ? 'completed' : 'missed';
+        // A DRAFT past the deadline is an abandoned attempt — should NOT
+        // present as 'completed' to the student. Treat as missed.
+        myStatus = (sub && sub.status !== 'DRAFT') ? 'completed' : 'missed';
       } else if (e.startDatetime && now >= e.startDatetime) {
         myStatus = 'active';
       }

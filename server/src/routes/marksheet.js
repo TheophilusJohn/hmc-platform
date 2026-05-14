@@ -3,16 +3,18 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { calculateCGPA } = require('../utils/cgpa');
 
-// UGC 10-point grading
+// UGC 10-point grading — must match server/src/utils/cgpa.js GRADE_POINTS table.
+// (Previously had a stray 'P' grade at 40-49% that didn't exist anywhere else
+// in the codebase. The canonical scale is C for 40-49%, F below 40%.)
 function gradeFromPercent(p) {
   if (p >= 90) return { grade: 'O', point: 10 };
   if (p >= 80) return { grade: 'A+', point: 9 };
   if (p >= 70) return { grade: 'A', point: 8 };
   if (p >= 60) return { grade: 'B+', point: 7 };
   if (p >= 50) return { grade: 'B', point: 6 };
-  if (p >= 45) return { grade: 'C', point: 5 };
-  if (p >= 40) return { grade: 'P', point: 4 };
+  if (p >= 40) return { grade: 'C', point: 5 };
   return { grade: 'F', point: 0 };
 }
 
@@ -65,20 +67,39 @@ async function buildMarksheet(studentId, semesterId) {
     };
   });
 
-  // CGPA (all-time)
-  const allEnrollments = await prisma.studentSubjectEnrollment.findMany({
-    where: { studentId, resultStatus: { in: ['PASS', 'FAIL'] } },
+  // CGPA (all-time) — uses the canonical calculateCGPA helper which:
+  //  • excludes CREDIT_TRANSFER and EX grades from the average,
+  //  • drops PENDING enrollments (no grade yet),
+  //  • replaces a failed-arrear F with a passing retake when one exists.
+  // Pre-compute each enrollment's letter grade locally so the helper can read
+  // `.grade` directly (it's the same grader as gradeFromPercent above).
+  const cgpaSource = await prisma.studentSubjectEnrollment.findMany({
+    where: { studentId },
     include: { subject: { select: { totalMarks: true, passMark: true, creditHours: true } } },
   });
-  let cgpaCredits = 0, cgpaWeighted = 0;
-  for (const e of allEnrollments) {
-    const t = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-    const pct = e.subject.totalMarks > 0 ? (t / e.subject.totalMarks) * 100 : 0;
-    const g = t < e.subject.passMark ? { point: 0 } : gradeFromPercent(pct);
-    cgpaCredits += e.subject.creditHours;
-    cgpaWeighted += g.point * e.subject.creditHours;
-  }
-  const cgpa = cgpaCredits > 0 ? (cgpaWeighted / cgpaCredits).toFixed(2) : null;
+  const cgpaInput = cgpaSource.map(e => {
+    let grade = e.grade;
+    if (!grade && (e.resultStatus === 'PASS' || e.resultStatus === 'FAIL')) {
+      const t = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
+      const pct = e.subject.totalMarks > 0 ? (t / e.subject.totalMarks) * 100 : 0;
+      grade = (t < e.subject.passMark) ? 'F' : gradeFromPercent(pct).grade;
+    }
+    return {
+      subjectId: e.subjectId,
+      grade,
+      isArrear: e.isArrear,
+      creditHours: e.subject.creditHours,
+      enrollmentType: e.enrollmentType,
+    };
+  });
+  const cgpaNum = calculateCGPA(cgpaInput);
+  const cgpa = cgpaNum > 0 ? cgpaNum.toFixed(2) : (cgpaInput.some(x => x.grade) ? cgpaNum.toFixed(2) : null);
+  // credits earned = sum of credits across passing rows + transfer credits
+  const cgpaCredits = cgpaInput.reduce((sum, x) => {
+    if (x.enrollmentType === 'CREDIT_TRANSFER') return sum + (x.creditHours || 0);
+    if (x.grade && x.grade !== 'F') return sum + (x.creditHours || 0);
+    return sum;
+  }, 0);
 
   // Semester GPA
   let semesterGpa = null;

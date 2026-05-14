@@ -122,7 +122,23 @@ router.post('/', authenticate, admissionsAccess, async (req, res, next) => {
     const prog = await prisma.programme.findUnique({ where: { id: programmeId } });
     if (!prog) return res.status(400).json({ error: 'Invalid programmeId' });
 
-    const formData = { ...rest, ...(bodyFormData || {}) };
+    // Whitelist the formData fields we accept — prevents `__proto__` and
+    // other unexpected keys from landing in the JSONB column, and means a
+    // schema audit can enumerate every persisted field.
+    const APPLICANT_FORM_FIELDS = new Set([
+      'firstName', 'lastName', 'email', 'phone',
+      'dob', 'gender', 'nationality', 'maritalStatus',
+      'studyMode', 'permanentAddress', 'presentAddress',
+      'statementOfFaith', 'academicBackground',
+      'churchAffiliation', 'pastoralReference', 'christianLeaderReference',
+      'healthDeclaration', 'financialDeclaration',
+      'languagePreference', 'preferredStartYear', 'previousProgrammes',
+    ]);
+    const rawForm = { ...rest, ...(bodyFormData || {}) };
+    const formData = {};
+    for (const k of APPLICANT_FORM_FIELDS) {
+      if (rawForm[k] !== undefined) formData[k] = rawForm[k];
+    }
 
     // Cap formData JSON size to prevent malicious 10MB+ submissions from being persisted.
     const FORM_DATA_MAX_BYTES = 64 * 1024;
@@ -256,6 +272,16 @@ router.put('/:id/stage', authenticate, admissionsAccess, async (req, res, next) 
 router.post('/:id/interview', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const { interviewScore, interviewNotes, recommendation } = req.body;
+    const existing = await prisma.applicant.findUnique({
+      where: { id: req.params.id }, select: { pipelineStage: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'Applicant not found' });
+    // Recording an interview only makes sense from INTERVIEW_SCHEDULED. Pre-fix
+    // a single POST from DOCS_REVIEW (or any earlier stage) silently jumped
+    // pipelineStage straight to INTERVIEW_DONE.
+    if (existing.pipelineStage !== 'INTERVIEW_SCHEDULED' && existing.pipelineStage !== 'INTERVIEW_DONE') {
+      return res.status(400).json({ error: `Cannot record interview from stage ${existing.pipelineStage}. Move to INTERVIEW_SCHEDULED first.` });
+    }
     // Map recommendation to pipeline stage
     let pipelineStage = 'INTERVIEW_DONE';
     const rec = String(recommendation || '').toLowerCase();
@@ -328,6 +354,12 @@ router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next
       // Re-check eligibility under the transaction (race-safe)
       if (!acceptableFrom.has(applicant.pipelineStage)) {
         throw Object.assign(new Error('Applicant stage changed; refusing to accept.'), { status: 409 });
+      }
+      // Require studentType to be set explicitly — legacy rows with null
+      // studentType would default to DOMESTIC INR and silently mis-bill an
+      // international student.
+      if (!applicant.studentType) {
+        throw Object.assign(new Error('Applicant has no studentType set (DOMESTIC/INTERNATIONAL). Update before accepting.'), { status: 400 });
       }
 
       const fd = applicant.formData || {};
@@ -486,15 +518,36 @@ router.post('/:id/enroll', authenticate, admissionsAccess, async (req, res, next
 router.post('/:id/reactivate', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const { intakeYear } = req.body;
+    // Block reactivate when there's already a converted student account —
+    // otherwise stale interview/decision data carries over silently and a
+    // re-accept would create a SECOND user with a parallel ledger while the
+    // original account still exists. Admin must deactivate the existing user first.
+    const existing = await prisma.applicant.findUnique({
+      where: { id: req.params.id },
+      select: { convertedToUserId: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'Applicant not found' });
+    if (existing.convertedToUserId) {
+      return res.status(409).json({ error: 'Applicant has a converted student account. Deactivate that account first before reactivating the application.' });
+    }
     const applicant = await prisma.applicant.update({
       where: { id: req.params.id },
       data: {
         status: 'active',
         pipelineStage: 'RECEIVED',
         intakeYear: intakeYear || new Date().getFullYear(),
+        // Clear ALL stale state — pre-fix, interviewerId/interviewScore/
+        // interviewNotes/decisionMakerId carried over so a reactivated applicant
+        // looked half-interviewed.
         decision: null,
         decisionAt: null,
+        decisionMakerId: null,
+        decisionReason: null,
         offerExpiresAt: null,
+        interviewerId: null,
+        interviewedAt: null,
+        interviewScore: null,
+        interviewNotes: null,
       },
       include: { programme: { select: { name: true, code: true } } },
     });

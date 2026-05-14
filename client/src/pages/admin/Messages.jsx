@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PageWrapper, Card, Btn, Badge, Table, Tabs, Modal, Input, Select, SearchInput } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
@@ -29,6 +29,13 @@ export default function Messages() {
   const [selectedStudentIds, setSelectedStudentIds] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
+  // Debounce the picker search so we don't hit /users on every keystroke —
+  // pre-fix this hammered the backend with one request per character.
+  const [debouncedPickerSearch, setDebouncedPickerSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedPickerSearch(pickerSearch), 250);
+    return () => clearTimeout(t);
+  }, [pickerSearch]);
   const [previewRecipients, setPreviewRecipients] = useState(null);
   const [queryId, setQueryId] = useState(null);
   const [response, setResponse] = useState('');
@@ -37,7 +44,7 @@ export default function Messages() {
   const { data: queries, refetch: refetchQ } = useApi('/queries');
   const { data: settings } = useApi('/settings');
   const { data: progData } = useApi('/programmes');
-  const { data: pickerStudents } = useApi(pickerOpen ? `/users?role=STUDENT&search=${encodeURIComponent(pickerSearch)}` : null, [pickerOpen, pickerSearch]);
+  const { data: pickerStudents } = useApi(pickerOpen ? `/users?role=STUDENT&search=${encodeURIComponent(debouncedPickerSearch)}` : null, [pickerOpen, debouncedPickerSearch]);
 
   const settingsMap = settings?.settings || settings || {};
   const configured = settingsMap.communication || {};
@@ -66,7 +73,9 @@ export default function Messages() {
     } catch (e) { alert('Preview failed: ' + (e.response?.data?.error || e.message)); }
   };
 
+  const [sending, setSending] = useState(false);
   const handleSend = async () => {
+    if (sending) return;
     if (form.scope === 'individual' && selectedStudentIds.length === 0) {
       alert('Please select at least one recipient.');
       return;
@@ -80,6 +89,7 @@ export default function Messages() {
       alert('Select at least one channel.');
       return;
     }
+    setSending(true);
     try {
       await api.post('/messages', {
         type: form.type, subject: form.subject, body: form.body,
@@ -91,11 +101,20 @@ export default function Messages() {
       setSelectedStudentIds([]);
       alert('Message queued for sending.');
     } catch (e) { alert('Send failed: ' + (e?.response?.data?.error || e.message)); }
+    finally { setSending(false); }
   };
 
   const handleResolve = async (id) => {
-    await api.put(`/queries/${id}/respond`, { response, status: 'RESOLVED' });
-    setQueryId(null); setResponse(''); refetchQ();
+    if (!response || !response.trim()) {
+      alert('Please enter a response before resolving the query.');
+      return;
+    }
+    try {
+      await api.put(`/queries/${id}/respond`, { response, status: 'RESOLVED' });
+      setQueryId(null); setResponse(''); refetchQ();
+    } catch (e) {
+      alert('Failed to resolve query: ' + (e?.response?.data?.error || e.message));
+    }
   };
 
   const insertTag = (tag) => setForm(f => ({ ...f, body: f.body + ' ' + tag }));
@@ -110,11 +129,21 @@ export default function Messages() {
     setSelectedStudentIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
+  // Server returns nested `student.studentProfile.firstName` etc., and statuses
+  // are UPPERCASE (OPEN / IN_PROGRESS / RESOLVED). Render from that shape.
   const qCols = [
-    { key: 'studentName', label: 'Student', render: v => <strong>{v}</strong> },
-    { key: 'category', label: 'Category', render: v => <Badge color="navy">{v}</Badge> },
+    { key: 'student', label: 'Student', render: (_, row) => {
+      const sp = row?.student?.studentProfile;
+      const name = sp ? `${sp.firstName || ''} ${sp.lastName || ''}`.trim() : (row?.student?.email || '—');
+      return <strong>{name}</strong>;
+    } },
+    { key: 'category', label: 'Category', render: v => <Badge color="navy">{String(v || '').toLowerCase().replace(/_/g, ' ')}</Badge> },
     { key: 'subject', label: 'Subject', render: v => <span style={{ fontSize: 13 }}>{v}</span> },
-    { key: 'status', label: 'Status', render: v => <Badge color={v === 'resolved' ? 'green' : v === 'open' ? 'amber' : 'teal'}>{v}</Badge> },
+    { key: 'status', label: 'Status', render: v => {
+      const k = String(v || '').toUpperCase();
+      const color = k === 'RESOLVED' ? 'green' : k === 'OPEN' ? 'amber' : 'teal';
+      return <Badge color={color}>{k.toLowerCase().replace(/_/g, ' ')}</Badge>;
+    } },
     { key: 'slaDeadline', label: 'SLA', render: v => v && new Date(v) < new Date() ? <span style={{ color: '#991B1B', fontWeight: 600, fontSize: 12 }}>OVERDUE</span> : <span style={{ fontSize: 12 }}>{v ? new Date(v).toLocaleDateString('en-IN') : '—'}</span> },
     { key: 'id', label: '', render: id => <Btn size="sm" onClick={() => setQueryId(id)}>Respond</Btn> },
   ];
@@ -183,7 +212,7 @@ export default function Messages() {
             )}
             <div style={{ display: 'flex', gap: 8 }}>
               <Btn variant="outline" onClick={handlePreview}>Preview Recipients</Btn>
-              <Btn onClick={handleSend}>Send Message</Btn>
+              <Btn onClick={handleSend} disabled={sending}>{sending ? 'Sending…' : 'Send Message'}</Btn>
             </div>
           </div>
         )}

@@ -68,9 +68,32 @@ export default function NewApplicant() {
     }
   };
 
+  // Per-step minimum requirements. Pre-fix every step except 0/1/10 returned
+  // true, so applicants could blow through Address/Ministry/Academic/References/etc.
+  // with no data and submit a near-empty application.
   const canNext = () => {
     if (step === 0) return !!form.programmeId;
     if (step === 1) return !!(form.firstName && form.lastName && form.email && form.phone && form.dob);
+    // Address
+    if (step === 2) return !!(form.permanentAddress);
+    // Ministry Background
+    if (step === 3) return !!(form.churchAffiliation || form.ministryExperience);
+    // Academic Background
+    if (step === 4) return !!(form.highestQualification || form.academicBackground);
+    // Spouse Info — only required when maritalStatus is married
+    if (step === 5) {
+      if (String(form.maritalStatus || '').toLowerCase() !== 'married') return true;
+      return !!(form.spouseName);
+    }
+    // References — require both name+email for both refs (PASTORAL + CHRISTIAN_LEADER)
+    if (step === 6) return !!(form.ref1?.name && form.ref1?.email && form.ref2?.name && form.ref2?.email);
+    // Statement of Faith
+    if (step === 7) return !!(form.statementOfFaith && form.statementOfFaith.trim().length >= 50);
+    // Health Declaration — must affirm
+    if (step === 8) return form.healthDeclaration === true;
+    // Financial Info — basic acknowledgement
+    if (step === 9) return !!(form.financialAffordability || form.financialDeclaration);
+    // Final declaration
     if (step === 10) return form.declaration;
     return true;
   };

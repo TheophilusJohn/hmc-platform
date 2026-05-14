@@ -11,10 +11,20 @@ export function Help() {
   const [form, setForm] = useState({ category: 'general', subject: '', body: '' });
   const { data: queries, refetch } = useApi('/queries/my');
 
+  const [submitting, setSubmitting] = useState(false);
   const handleSubmit = async () => {
-    await api.post('/queries', form);
-    setForm({ category: 'general', subject: '', body: '' }); refetch();
-    setTab('history');
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await api.post('/queries', form);
+      setForm({ category: 'general', subject: '', body: '' });
+      refetch();
+      setTab('history');
+    } catch (e) {
+      alert('Failed to submit query: ' + (e?.response?.data?.error || e.message));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const statusColors = { open: 'amber', in_progress: 'teal', resolved: 'green', closed: 'gray' };
@@ -35,7 +45,9 @@ export function Help() {
                   style={{ width: '100%', minHeight: 120, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, fontFamily: 'DM Sans', boxSizing: 'border-box' }} />
               </div>
             </div>
-            <Btn style={{ marginTop: 16 }} onClick={handleSubmit} disabled={!form.subject || !form.body}>Submit Query</Btn>
+            <Btn style={{ marginTop: 16 }} onClick={handleSubmit} disabled={submitting || !form.subject || !form.body}>
+              {submitting ? 'Submitting…' : 'Submit Query'}
+            </Btn>
           </div>
         )}
         {tab === 'history' && (

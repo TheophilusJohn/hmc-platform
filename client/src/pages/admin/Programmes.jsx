@@ -69,7 +69,14 @@ export default function Programmes() {
   const handleCreateBatch = async () => {
     try {
       const startYear = parseInt(batchForm.startYear) || new Date().getFullYear();
-      const endYear = startYear + (selectedProg?.durationYears || 3);
+      // Respect the user-entered endYear if they touched it; otherwise default to
+      // startYear + programme.durationYears. Pre-fix this always overrode whatever
+      // the user typed, which conflicted with the Edit modal that lets them
+      // change endYear freely.
+      const enteredEnd = parseInt(batchForm.endYear);
+      const endYear = (Number.isInteger(enteredEnd) && enteredEnd > startYear)
+        ? enteredEnd
+        : startYear + (selectedProg?.durationYears || 3);
       await api.post(`/programmes/${selectedProg.id}/batches`, {
         name: batchForm.name, startYear, endYear, currentYear: 1,
         maxIntake: parseInt(batchForm.maxIntake) || 30,
@@ -222,8 +229,15 @@ export default function Programmes() {
         <Modal title={`New Batch — ${currentSelected.name}`} onClose={() => setBatchOpen(false)}>
           <div style={{ display: 'grid', gap: 14 }}>
             <Input label="Batch Name" value={batchForm.name} onChange={e => setBatchForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Batch 2025-28" />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
               <Input label="Start Year" type="number" value={batchForm.startYear} onChange={e => setBatchForm(f => ({ ...f, startYear: e.target.value }))} />
+              <Input
+                label={`End Year (default: +${currentSelected.durationYears || 3})`}
+                type="number"
+                value={batchForm.endYear}
+                onChange={e => setBatchForm(f => ({ ...f, endYear: e.target.value }))}
+                placeholder={`${(parseInt(batchForm.startYear) || new Date().getFullYear()) + (currentSelected.durationYears || 3)}`}
+              />
               <Input label="Max Intake" type="number" value={batchForm.maxIntake} onChange={e => setBatchForm(f => ({ ...f, maxIntake: e.target.value }))} />
             </div>
           </div>

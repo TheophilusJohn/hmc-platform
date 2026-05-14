@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { PageWrapper, Card, Badge, Btn } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
@@ -6,8 +7,13 @@ const TYPE_ICONS = { fee: '💰', exam: '📝', assignment: '✏️', general: '
 const TYPE_COLORS = { fee: 'amber', exam: 'purple', assignment: 'teal', general: 'navy', marks: 'green', attendance: 'red', hostel: 'navy' };
 
 export default function Notifications() {
-  const { data, refetch } = useApi('/notifications');
+  // Server paginates at 20/page. Pre-fix the FE never requested page 2, so
+  // students could only ever see their 20 most recent notifications.
+  const [page, setPage] = useState(1);
+  const { data, refetch } = useApi(`/notifications?page=${page}&limit=20`, [page]);
   const notifications = data?.notifications || [];
+  const total = data?.total ?? notifications.length;
+  const hasMore = page * 20 < total;
 
   const markRead = async (id) => {
     await api.put(`/notifications/${id}/read`);
@@ -46,6 +52,16 @@ export default function Notifications() {
         ))}
         {notifications.length === 0 && (
           <div style={{ textAlign: 'center', color: '#7B8494', padding: 40 }}>No notifications yet.</div>
+        )}
+        {hasMore && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+            <Btn size="sm" variant="outline" onClick={() => setPage(p => p + 1)}>Load older notifications</Btn>
+          </div>
+        )}
+        {page > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 8, fontSize: 12, color: '#7B8494' }}>
+            Page {page} · showing {notifications.length} of {total}
+          </div>
         )}
       </Card>
     </PageWrapper>

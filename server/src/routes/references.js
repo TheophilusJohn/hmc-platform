@@ -23,9 +23,29 @@ router.get('/applicant/:id', authenticate, admissionsAccess, async (req, res, ne
   } catch (err) { next(err); }
 });
 
+const VALID_REF_TYPES = new Set(['PASTORAL', 'CHRISTIAN_LEADER']);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 router.post('/send', authenticate, admissionsAccess, async (req, res, next) => {
   try {
-    const { applicantId, refType, refereeName, refereeEmail, refereePhone } = req.body;
+    const { applicantId, refereeName, refereePhone } = req.body;
+    const refereeEmail = req.body.refereeEmail ? String(req.body.refereeEmail).trim().toLowerCase() : '';
+    const refType = String(req.body.refType || '').toUpperCase();
+
+    if (!applicantId) return res.status(400).json({ error: 'applicantId is required' });
+    if (!VALID_REF_TYPES.has(refType)) {
+      return res.status(400).json({ error: `refType must be one of: ${[...VALID_REF_TYPES].join(', ')}` });
+    }
+    if (!refereeName || String(refereeName).trim().length < 2) {
+      return res.status(400).json({ error: 'refereeName is required' });
+    }
+    if (!EMAIL_RE.test(refereeEmail)) {
+      return res.status(400).json({ error: 'refereeEmail is not a valid email address' });
+    }
+
+    const applicantExists = await prisma.applicant.findUnique({ where: { id: applicantId }, select: { id: true } });
+    if (!applicantExists) return res.status(404).json({ error: 'Applicant not found' });
+
     const token = crypto.randomBytes(32).toString('hex');
     const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
@@ -62,6 +82,15 @@ router.post('/send', authenticate, admissionsAccess, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Whitelisted fields the referee form may submit. Anything else is dropped
+// before persistence so the JSONB column can't be turned into a dumping ground.
+const REFERENCE_RESPONSE_FIELDS = new Set([
+  'character', 'spiritualMaturity', 'ministry', 'leadership', 'concerns',
+  'overallRecommendation', 'comments', 'relationship', 'knownForYears',
+  'signature', 'signatureDate',
+]);
+const REFERENCE_RESPONSE_MAX_BYTES = 32 * 1024;
+
 router.put('/:token/submit', async (req, res, next) => {
   try {
     const ref = await prisma.applicantReference.findUnique({ where: { token: req.params.token } });
@@ -69,9 +98,20 @@ router.put('/:token/submit', async (req, res, next) => {
     if (ref.status === 'RECEIVED') return res.status(400).json({ error: 'Reference already submitted.' });
     if (isExpired(ref.tokenExpiresAt)) return res.status(400).json({ error: 'This reference link has expired.' });
 
+    // Pick allowlisted fields from the public, unauthenticated body.
+    const response = {};
+    for (const k of REFERENCE_RESPONSE_FIELDS) {
+      if (req.body[k] !== undefined) response[k] = req.body[k];
+    }
+    // Hard size cap before persisting.
+    const bytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+    if (bytes > REFERENCE_RESPONSE_MAX_BYTES) {
+      return res.status(413).json({ error: `Reference response exceeds ${REFERENCE_RESPONSE_MAX_BYTES} byte limit.` });
+    }
+
     await prisma.applicantReference.update({
       where: { token: req.params.token },
-      data: { response: req.body, submittedAt: new Date(), status: 'RECEIVED' },
+      data: { response, submittedAt: new Date(), status: 'RECEIVED' },
     });
     res.json({ success: true, message: 'Thank you for submitting your reference.' });
   } catch (err) { next(err); }

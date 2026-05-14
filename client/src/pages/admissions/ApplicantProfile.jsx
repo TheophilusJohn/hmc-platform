@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Badge, Btn, Tabs, Modal } from '../../components/common';
 import api from '../../utils/api';
 
@@ -19,6 +19,14 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
     const { data } = await api.get(`/admissions/${applicant.id}`);
     setApplicant(data.applicant || data);
   };
+
+  // Fetch the full applicant (with documents + references) on open. The
+  // list endpoint returns only the flat row, so the Documents tab would show
+  // every doc as "Missing" until something else triggered a refresh.
+  useEffect(() => {
+    refresh().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const advance = async () => {
     setLoading(true);
@@ -43,9 +51,18 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
     setShowReject(false); onUpdate();
   };
 
+  const [savingInterview, setSavingInterview] = useState(false);
   const saveInterview = async () => {
-    await api.post(`/admissions/${applicant.id}/interview`, { interviewScore, interviewNotes });
-    await refresh();
+    if (savingInterview) return;
+    setSavingInterview(true);
+    try {
+      await api.post(`/admissions/${applicant.id}/interview`, { interviewScore, interviewNotes });
+      await refresh();
+    } catch (e) {
+      alert(e?.response?.data?.error || 'Failed to save interview.');
+    } finally {
+      setSavingInterview(false);
+    }
   };
 
   const canAdvance = applicant.pipelineStage !== 'ENROLLED' && applicant.pipelineStage !== 'REJECTED';
@@ -148,7 +165,7 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
                 <textarea value={interviewNotes} onChange={e => setInterviewNotes(e.target.value)}
                   style={{ width: '100%', minHeight: 120, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, fontFamily: 'DM Sans', boxSizing: 'border-box' }} />
               </div>
-              <Btn onClick={saveInterview}>Save Interview Notes</Btn>
+              <Btn onClick={saveInterview} disabled={savingInterview}>{savingInterview ? 'Saving…' : 'Save Interview Notes'}</Btn>
             </div>
           )}
 

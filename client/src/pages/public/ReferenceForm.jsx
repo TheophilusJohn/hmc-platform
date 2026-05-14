@@ -28,7 +28,10 @@ export default function ReferenceForm() {
     e.preventDefault();
     setStatus('submitting');
     try {
-      await api.put(`/references/${token}/submit`, { answers });
+      // Server stores req.body whole as `response`. Send the answer fields
+      // flat so the admin viewer can read `response.character` etc. directly
+      // (was wrapping in `{answers:{...}}`, which buried the data one level).
+      await api.put(`/references/${token}/submit`, { ...answers });
       setStatus('done');
     } catch { setStatus('error'); }
   };

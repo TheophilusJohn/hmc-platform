@@ -6,15 +6,18 @@ const { authenticate } = require('../middleware/auth');
 
 router.get('/', authenticate, async (req, res, next) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
+    // Parse + clamp inputs — `(page-1)*limit` was string-math when page/limit
+    // came in as strings (which they do from query strings), producing NaN.
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const notifications = await prisma.notification.findMany({
       where: { userId: req.user.id },
       orderBy: { createdAt: 'desc' },
       skip: (page - 1) * limit,
-      take: parseInt(limit),
+      take: limit,
     });
     const total = await prisma.notification.count({ where: { userId: req.user.id } });
-    res.json({ notifications, total });
+    res.json({ notifications, total, page, limit });
   } catch (err) { next(err); }
 });
 

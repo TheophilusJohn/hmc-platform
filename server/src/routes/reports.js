@@ -5,17 +5,21 @@ const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, facultyOrAbove } = require('../middleware/rbac');
 
-// Helper: calculate CGPA from enrollments (no cgpa field exists on StudentProfile)
+// Helper: calculate CGPA from enrollments. Returns null (not 0) when the
+// student has no graded enrollments yet — pre-fix 0 was indistinguishable
+// from "actual CGPA of 0", which flagged every new student as at-risk.
 function calculateCGPA(enrollments) {
-  const graded = enrollments.filter(e => e.cgpaPoints !== null && e.resultStatus === 'PASS');
-  if (graded.length === 0) return 0;
+  const graded = enrollments.filter(e =>
+    e.cgpaPoints !== null && (e.resultStatus === 'PASS' || e.resultStatus === 'FAIL')
+  );
+  if (graded.length === 0) return null;
   let totalPoints = 0, totalCredits = 0;
   for (const e of graded) {
     const credits = e.subject?.creditHours || 1;
     totalPoints += (e.cgpaPoints || 0) * credits;
     totalCredits += credits;
   }
-  return totalCredits > 0 ? +(totalPoints / totalCredits).toFixed(2) : 0;
+  return totalCredits > 0 ? +(totalPoints / totalCredits).toFixed(2) : null;
 }
 
 // GET /api/reports/academic/marksheet/:studentId
@@ -148,11 +152,14 @@ router.get('/financial/outstanding', authenticate, adminOnly, async (req, res, n
 // GET /api/reports/admissions/pipeline
 router.get('/admissions/pipeline', authenticate, adminOnly, async (req, res, next) => {
   try {
+    // Single groupBy instead of 8 sequential counts.
     const stages = ['RECEIVED', 'DOCS_REVIEW', 'INTERVIEW_SCHEDULED', 'INTERVIEW_DONE', 'WAITLISTED', 'ACCEPTED', 'ENROLLED', 'REJECTED'];
-    const counts = await Promise.all(stages.map(async s => ({
-      stage: s,
-      count: await prisma.applicant.count({ where: { pipelineStage: s } }),
-    })));
+    const grouped = await prisma.applicant.groupBy({
+      by: ['pipelineStage'],
+      _count: { _all: true },
+    });
+    const map = Object.fromEntries(grouped.map(g => [g.pipelineStage, g._count._all]));
+    const counts = stages.map(s => ({ stage: s, count: map[s] || 0 }));
     res.json(counts);
   } catch (err) { next(err); }
 });

@@ -70,14 +70,27 @@ function auditLog(req, res, next) {
     if (res.statusCode < 400 && req.user) {
       setImmediate(async () => {
         try {
+          // Walk common response shapes to recover a recordId. Routes wrap
+          // creates inconsistently — {applicant:{id}}, {user:{id}}, {payment:{id,...}},
+          // {id} bare, or {data:{id}}. Without this, POST creates frequently
+          // log recordId=null, breaking traceability for the most important rows.
+          const findRecordId = (d) => {
+            if (!d || typeof d !== 'object') return null;
+            if (typeof d.id === 'string') return d.id;
+            if (d.data?.id) return d.data.id;
+            for (const v of Object.values(d)) {
+              if (v && typeof v === 'object' && typeof v.id === 'string') return v.id;
+            }
+            return null;
+          };
           await prisma.auditLog.create({
             data: {
               actorId: req.user?.id || null,
               action: deriveAction(method, req.path),
               tableName: deriveTable(req.path),
-              recordId: req.params?.id || data?.id || data?.data?.id || null,
+              recordId: req.params?.id || findRecordId(data),
               oldValue: req.oldValue || null, // set by route handler if needed
-              newValue: data?.id ? redact(data) : null,
+              newValue: data ? redact(data) : null,
               ipAddress: req.ip || req.connection?.remoteAddress,
               userAgent: req.headers['user-agent'],
             }

@@ -4,6 +4,8 @@ import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 import ApplicantProfile from './ApplicantProfile';
 
+// Includes REJECTED so rejected applicants don't silently disappear from the
+// pipeline view. (The grid auto-expands to fit the extra column.)
 const STAGES = [
   { id: 'received', label: 'Received', color: '#7B8494' },
   { id: 'docs_review', label: 'Docs Review', color: '#92400E' },
@@ -12,6 +14,7 @@ const STAGES = [
   { id: 'waitlisted', label: 'Waitlisted', color: '#C9920A' },
   { id: 'accepted', label: 'Accepted', color: '#166534' },
   { id: 'enrolled', label: 'Enrolled', color: '#0F2B4A' },
+  { id: 'rejected', label: 'Rejected', color: '#991B1B' },
 ];
 
 const TYPE_COLORS = { domestic: 'navy', international: 'teal' };
@@ -57,8 +60,10 @@ export default function Pipeline() {
                   <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 6 }}>{a.programmeName}</div>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     <Badge color={TYPE_COLORS[String(a.studentType || '').toLowerCase()] || 'gray'} style={{ fontSize: 10, padding: '1px 6px' }}>{a.studentType}</Badge>
-                    {a.interviewDate && stage.id === 'interview_scheduled' && (
-                      <Badge color="teal" style={{ fontSize: 10, padding: '1px 6px' }}>{new Date(a.interviewDate).toLocaleDateString('en-IN', { day:'numeric',month:'short' })}</Badge>
+                    {/* Schema field is `interviewedAt` (not `interviewDate`).
+                        The badge shows when the interview is actually recorded. */}
+                    {a.interviewedAt && stage.id === 'interview_scheduled' && (
+                      <Badge color="teal" style={{ fontSize: 10, padding: '1px 6px' }}>{new Date(a.interviewedAt).toLocaleDateString('en-IN', { day:'numeric',month:'short' })}</Badge>
                     )}
                     {a.referralCode && <Badge color="gold" style={{ fontSize: 10, padding: '1px 6px' }}>Referral</Badge>}
                   </div>

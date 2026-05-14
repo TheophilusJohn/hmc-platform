@@ -40,7 +40,12 @@ async function loadStudentForTranscript(studentProfileId) {
     include: {
       user: { select: { userIdDisplay: true } },
       enrollments: {
-        include: { subject: { include: { semester: true } } },
+        // Pull the enrollment's own Semester relation — NOT the subject's current
+        // semester. If a subject is re-offered in a later semester, the subject
+        // row's semesterId moves; the enrollment's semesterId stays pinned to
+        // when the student actually took the course. Grouping by subject.semester
+        // would silently place historical results in the wrong term.
+        include: { subject: true, semester: true },
       },
     },
   });
@@ -48,7 +53,7 @@ async function loadStudentForTranscript(studentProfileId) {
 
   const bySemester = {};
   for (const e of profile.enrollments || []) {
-    const sem = e.subject?.semester;
+    const sem = e.semester;
     if (!sem) continue;
     if (!bySemester[sem.id]) bySemester[sem.id] = { semester: sem, subjects: [] };
     bySemester[sem.id].subjects.push(e);
@@ -181,7 +186,7 @@ async function generateReceipt(paymentId) {
       .text(`Date: ${new Date(payment.paidAt).toLocaleDateString('en-IN')}`)
       .text(`Student: ${sp?.firstName || ''} ${sp?.lastName || ''} (${sp?.user?.userIdDisplay || ''})`)
       .text(`Fee: ${payment.ledger?.feeType?.name || 'Fee Payment'}`)
-      .text(`Amount: ${symbol}${Number(payment.amount).toLocaleString()}`)
+      .text(`Amount: ${symbol}${Number(payment.amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
       .text(`Mode: ${(payment.mode || '').replace(/_/g, ' ').toUpperCase()}`);
 
     if (payment.gatewayRef) doc.text(`Reference: ${payment.gatewayRef}`);

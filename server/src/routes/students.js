@@ -89,6 +89,12 @@ router.get('/:id/academic-summary', authenticate, facultyOrAbove, async (req, re
     if (req.user.role === 'FACULTY' && !fp) {
       return res.status(403).json({ error: 'Faculty profile not found' });
     }
+    // FACULTY may only see attendance for subjects they actually teach. Pre-fix,
+    // the unfiltered `attendance: { select: { status: true } }` leaked the
+    // student's whole attendance history to any faculty.
+    const attendanceFilter = req.user.role === 'FACULTY'
+      ? { subject: { facultyId: fp.id } }
+      : {};
     const student = await prisma.studentProfile.findUnique({
       where: { id: req.params.id },
       include: {
@@ -99,12 +105,17 @@ router.get('/:id/academic-summary', authenticate, facultyOrAbove, async (req, re
           where: req.user.role === 'FACULTY' ? { subject: { facultyId: fp.id } } : {},
           include: { subject: { select: { id: true, code: true, name: true, totalMarks: true, passMark: true, creditHours: true } } },
         },
-        attendance: { select: { status: true } },
+        attendance: { where: attendanceFilter, select: { status: true } },
       },
     });
     if (!student) return res.status(404).json({ error: 'Not found' });
+    // CGPA: faculty should only see CGPA computed from their own subjects.
     const allEnr = await prisma.studentSubjectEnrollment.findMany({
-      where: { studentId: student.id, resultStatus: { in: ['PASS', 'FAIL'] } },
+      where: {
+        studentId: student.id,
+        resultStatus: { in: ['PASS', 'FAIL'] },
+        ...(req.user.role === 'FACULTY' ? { subject: { facultyId: fp.id } } : {}),
+      },
       include: { subject: { select: { creditHours: true, totalMarks: true, passMark: true } } },
     });
     let credits = 0, weighted = 0;

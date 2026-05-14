@@ -156,16 +156,21 @@ router.put('/:id', authenticate, async (req, res, next) => {
     });
     if (!userBefore) return res.status(404).json({ error: 'User not found' });
 
-    // Decide allowed fields by permission level
+    // Decide allowed fields by permission level. Email is the LOGIN identity —
+    // a student must not be able to silently rotate their own account email
+    // to another address (would let them hijack any unused address). Only
+    // admins can change email; self-service updates are restricted to phone.
     const userFields = isAdmin
       ? ['email', 'phone', 'status']
-      : ['email', 'phone'];
+      : ['phone'];
     const studentFields = ['firstName', 'lastName', 'dob', 'gender', 'nationality', 'permanentAddress', 'presentAddress', 'batchId', 'programmeId', 'studentType', 'studyMode'];
     const facultyFields = ['firstName', 'lastName', 'designation', 'qualifications'];
 
     // Build User update payload
     const userData = {};
     for (const k of userFields) if (req.body[k] !== undefined) userData[k] = req.body[k];
+    // Normalize email if admin is changing it.
+    if (userData.email !== undefined) userData.email = String(userData.email).trim().toLowerCase();
 
     if (Object.keys(userData).length) {
       await prisma.user.update({ where: { id: req.params.id }, data: userData });

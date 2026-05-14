@@ -20,6 +20,18 @@ router.post('/:id/override', authenticate, facultyOrAbove, async (req, res, next
     if (!(await canAccessSubject(req.user, exam.subjectId))) {
       return res.status(403).json({ error: 'You do not teach this subject' });
     }
+
+    // Refuse override for a student who isn't enrolled in this subject — pre-fix
+    // a faculty could create a Submission for an arbitrary StudentProfile.id,
+    // including non-enrolled or non-existent students.
+    const enrollment = await prisma.studentSubjectEnrollment.findFirst({
+      where: { studentId, subjectId: exam.subjectId },
+      select: { id: true },
+    });
+    if (!enrollment) {
+      return res.status(400).json({ error: 'Student is not enrolled in this subject — cannot override marks.' });
+    }
+
     const m = parseFloat(marks);
     if (isNaN(m) || m < 0) return res.status(400).json({ error: 'Marks must be a non-negative number' });
     if (m > exam.totalMarks) return res.status(400).json({ error: `Marks cannot exceed exam total (${exam.totalMarks})` });

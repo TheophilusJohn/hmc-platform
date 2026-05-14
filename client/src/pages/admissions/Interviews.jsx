@@ -10,14 +10,25 @@ export function Interviews() {
   const { data, refetch } = useApi('/admissions?stage=interview_scheduled&stage=interview_done');
   const applicants = data?.applicants || [];
 
+  const [saving, setSaving] = useState(false);
   const handleSave = async () => {
-    await api.post(`/admissions/${selected.id}/interview`, { interviewScore: form.score, interviewNotes: form.notes, recommendation: form.recommendation });
-    setSelected(null); refetch();
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.post(`/admissions/${selected.id}/interview`, { interviewScore: form.score, interviewNotes: form.notes, recommendation: form.recommendation });
+      setSelected(null);
+      refetch();
+    } catch (e) {
+      alert(e?.response?.data?.error || 'Failed to save interview.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const cols = [
     { key: 'name', label: 'Applicant', render: (_,r) => <div><div style={{fontWeight:500}}>{r.firstName} {r.lastName}</div><div style={{fontSize:12,color:'#7B8494'}}>{r.programmeName}</div></div> },
-    { key: 'interviewDate', label: 'Date', render: v => v ? new Date(v).toLocaleDateString('en-IN') : 'TBD' },
+    // Schema field is `interviewedAt` (not `interviewDate`).
+    { key: 'interviewedAt', label: 'Date', render: v => v ? new Date(v).toLocaleDateString('en-IN') : 'TBD' },
     { key: 'pipelineStage', label: 'Stage', render: v => { const lc = String(v||'').toLowerCase(); return <Badge color={lc==='interview_done'?'green':'amber'}>{lc.replace(/_/g,' ')}</Badge>; } },
     { key: 'interviewScore', label: 'Score', render: v => v ? `${v}/10` : '—' },
     { key: 'id', label: '', render: (_,r) => <Btn size="sm" onClick={() => { setSelected(r); setForm({ score: r.interviewScore||'', recommendation: r.recommendation||'accept', notes: r.interviewNotes||'' }); }}>Record</Btn> },
@@ -49,7 +60,7 @@ export function Interviews() {
           </div>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:16}}>
             <Btn variant="outline" onClick={() => setSelected(null)}>Cancel</Btn>
-            <Btn onClick={handleSave}>Save Interview</Btn>
+            <Btn onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Interview'}</Btn>
           </div>
         </Modal>
       )}

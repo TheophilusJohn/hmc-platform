@@ -12,19 +12,37 @@ export default function Profile() {
 
   useEffect(() => { if (data) setForm({ phone: data.phone, permanentAddress: data.permanentAddress, emergencyContact: data.emergencyContact, emergencyPhone: data.emergencyPhone }); }, [data]);
 
+  const [saving, setSaving] = useState(false);
+  const [changingPw, setChangingPw] = useState(false);
+
   const handleSave = async () => {
-    await api.put('/me/profile', form);
-    setEditing(false); refetch();
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.put('/me/profile', form);
+      setEditing(false);
+      refetch();
+    } catch (e) {
+      alert('Save failed: ' + (e.response?.data?.error || e.message));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleChangePw = async () => {
+    if (changingPw) return;
     if (pwForm.newPassword !== pwForm.confirm) { setPwError('Passwords do not match.'); return; }
     if (pwForm.newPassword.length < 8) { setPwError('Password must be at least 8 characters.'); return; }
+    setChangingPw(true);
     try {
       await api.post('/auth/change-password', { currentPassword: pwForm.currentPassword, newPassword: pwForm.newPassword });
       setPwForm({ currentPassword: '', newPassword: '', confirm: '' }); setPwError('');
       alert('Password changed successfully.');
-    } catch (e) { setPwError(e.response?.data?.message || 'Incorrect current password.'); }
+    } catch (e) {
+      setPwError(e.response?.data?.error || e.response?.data?.message || 'Incorrect current password.');
+    } finally {
+      setChangingPw(false);
+    }
   };
 
   return (
@@ -64,7 +82,7 @@ export default function Profile() {
                   <Input label="Emergency Phone" value={form.emergencyPhone || ''} onChange={e => setForm(f => ({ ...f, emergencyPhone: e.target.value }))} />
                 </div>
               </div>
-              <Btn style={{ marginTop: 16 }} onClick={handleSave}>Save Changes</Btn>
+              <Btn style={{ marginTop: 16 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</Btn>
             </div>
           )}
         </Card>
@@ -86,7 +104,7 @@ export default function Profile() {
               <Input label="Confirm Password" type="password" value={pwForm.confirm} onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))} />
             </div>
             {pwError && <div style={{ marginTop: 8, fontSize: 12, color: '#991B1B' }}>{pwError}</div>}
-            <Btn size="sm" style={{ marginTop: 14 }} onClick={handleChangePw}>Change Password</Btn>
+            <Btn size="sm" style={{ marginTop: 14 }} onClick={handleChangePw} disabled={changingPw}>{changingPw ? 'Changing…' : 'Change Password'}</Btn>
           </Card>
         </div>
       </div>

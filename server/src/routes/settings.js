@@ -51,7 +51,8 @@ router.get('/', authenticate, adminOnly, async (req, res, next) => {
 router.put('/', authenticate, adminOnly, async (req, res, next) => {
   try {
     const updates = req.body; // { key: value, ... }
-    await Promise.all(
+    // Transaction so a partial save can't leave settings half-applied.
+    await prisma.$transaction(
       Object.entries(updates).map(([key, value]) =>
         prisma.systemSetting.upsert({
           where: { key },
@@ -66,6 +67,12 @@ router.put('/', authenticate, adminOnly, async (req, res, next) => {
 
 router.put('/:key', authenticate, adminOnly, async (req, res, next) => {
   try {
+    // Allowlist the configurable section keys — pre-fix any admin could write
+    // arbitrary JSON under any key (e.g. seeding `razorpay.key_id` with a
+    // crafted value that's later exposed via /settings/public).
+    if (!SETTING_SECTIONS.includes(req.params.key)) {
+      return res.status(400).json({ error: `Unknown settings key. Allowed: ${SETTING_SECTIONS.join(', ')}` });
+    }
     const setting = await prisma.systemSetting.upsert({
       where: { key: req.params.key },
       update: { value: req.body, updatedById: req.user.id },

@@ -4,6 +4,7 @@ const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, adminOrTA, requireRole } = require('../middleware/rbac');
+const { Prisma } = require('@prisma/client');
 
 // GET /api/fee-types
 router.get('/fee-types', authenticate, async (req, res, next) => {
@@ -66,15 +67,29 @@ router.get('/students/:id/ledger', authenticate, async (req, res, next) => {
       orderBy: { createdAt: 'asc' },
     });
 
-    // Summary
-    const summary = ledger.reduce((acc, entry) => {
-      acc.totalCharged += Number(entry.amount);
-      acc.totalWaived += Number(entry.waivedAmount);
+    // Per-currency summary — pre-fix mixed INR and USD entries into the same
+    // bucket so totals were meaningless for international students with both
+    // INR-override rows and USD rows.
+    const blank = () => ({ totalCharged: 0, totalPaid: 0, totalWaived: 0, totalOutstanding: 0 });
+    const byCurrency = { INR: blank(), USD: blank() };
+    for (const entry of ledger) {
+      const cur = (entry.currency || 'INR').toUpperCase();
+      const bucket = byCurrency[cur] || (byCurrency[cur] = blank());
+      bucket.totalCharged += Number(entry.amount);
+      bucket.totalWaived += Number(entry.waivedAmount);
       const paid = entry.payments.reduce((s, p) => s + Number(p.amount), 0);
-      acc.totalPaid += paid;
-      acc.totalOutstanding += Number(entry.balance);
-      return acc;
-    }, { totalCharged: 0, totalPaid: 0, totalWaived: 0, totalOutstanding: 0 });
+      bucket.totalPaid += paid;
+      bucket.totalOutstanding += Number(entry.balance);
+    }
+    // Keep legacy summary keys (across-currency totals) for any caller that
+    // doesn't yet split, but expose per-currency breakdown as the source of truth.
+    const summary = {
+      totalCharged: byCurrency.INR.totalCharged + byCurrency.USD.totalCharged,
+      totalPaid: byCurrency.INR.totalPaid + byCurrency.USD.totalPaid,
+      totalWaived: byCurrency.INR.totalWaived + byCurrency.USD.totalWaived,
+      totalOutstanding: byCurrency.INR.totalOutstanding + byCurrency.USD.totalOutstanding,
+      byCurrency,
+    };
 
     res.json({ ledger, summary });
   } catch (err) { next(err); }
@@ -104,16 +119,20 @@ router.post('/students/:id/ledger/charge', authenticate,
         return res.status(400).json({ error: 'Charge amount must be a positive number' });
       }
 
+      // Use Prisma.Decimal for Decimal(10,2) columns — Number coercion loses
+      // precision for amounts like 37000.10 (binary float can't represent .10
+      // exactly).
+      const amountDec = new Prisma.Decimal(String(chargeAmount));
       const entry = await prisma.studentFeeLedger.create({
         data: {
           studentId: id,
           semesterId,
           feeTypeId,
           description,
-          amount: chargeAmount,
+          amount: amountDec,
           currency: chargeCurrency,
-          waivedAmount: 0,
-          balance: chargeAmount,
+          waivedAmount: new Prisma.Decimal(0),
+          balance: amountDec,
           status: 'UNPAID',
           dueDate: dueDate ? new Date(dueDate) : null,
           addedById: req.user.id,

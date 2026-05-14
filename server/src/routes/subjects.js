@@ -34,16 +34,30 @@ router.get('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Defense-in-depth: even though subjectExtras shadows POST/PUT in app.js,
+// allowlist fields here so a future mount-order flip can't introduce a
+// mass-assignment regression.
+const SUBJECT_FIELDS = [
+  'programmeId', 'semesterId', 'batchId', 'facultyId',
+  'name', 'code', 'creditHours', 'type',
+  'eseMarks', 'iaMarks', 'totalMarks', 'passMark', 'examMode',
+];
+function pickSubjectFields(body) {
+  const out = {};
+  for (const k of SUBJECT_FIELDS) if (body[k] !== undefined) out[k] = body[k];
+  return out;
+}
+
 router.post('/', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const subject = await prisma.subject.create({ data: { ...req.body, status: 'active' } });
+    const subject = await prisma.subject.create({ data: { ...pickSubjectFields(req.body), status: 'active' } });
     res.status(201).json(subject);
   } catch (err) { next(err); }
 });
 
 router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const subject = await prisma.subject.update({ where: { id: req.params.id }, data: req.body });
+    const subject = await prisma.subject.update({ where: { id: req.params.id }, data: pickSubjectFields(req.body) });
     res.json(subject);
   } catch (err) { next(err); }
 });

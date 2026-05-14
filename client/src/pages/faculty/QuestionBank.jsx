@@ -9,7 +9,11 @@ const DIFF_COLORS = { easy: 'green', medium: 'amber', hard: 'red' };
 export default function QuestionBank() {
   const [selectedSubject, setSelectedSubject] = useState('');
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ question: '', type: 'mcq', options: ['', '', '', ''], answer: '0', difficulty: 'medium', marks: 1, explanation: '' });
+  const EMPTY_QB_FORM = { question: '', type: 'MCQ', options: ['', '', '', ''], answer: '0', difficulty: 'medium', marks: 1, explanation: '' };
+  const [form, setForm] = useState(EMPTY_QB_FORM);
+  // Reset on modal close so reopening doesn't show the last (possibly partial)
+  // entry, including a stale File reference.
+  const closeQBModal = () => { setForm(EMPTY_QB_FORM); setOpen(false); };
 
   const { data: subjects } = useApi('/subjects?mine=true');
   const { data: questions, refetch } = useApi(selectedSubject ? `/subjects/${selectedSubject}/questions` : null, [selectedSubject]);
@@ -19,7 +23,7 @@ export default function QuestionBank() {
     try {
       await api.post(`/subjects/${selectedSubject}/questions`, form);
       setOpen(false);
-      setForm({ question: '', type: 'mcq', options: ['', '', '', ''], answer: '0', difficulty: 'medium', marks: 1, explanation: '' });
+      setForm(EMPTY_QB_FORM);
       refetch();
     } catch (e) {
       alert('Failed to add question: ' + (e?.response?.data?.error || e.message));
@@ -69,7 +73,7 @@ export default function QuestionBank() {
       </Card>
 
       {open && (
-        <Modal title="Add Question" onClose={() => setOpen(false)} wide>
+        <Modal title="Add Question" onClose={closeQBModal} wide>
           <div style={{ display: 'grid', gap: 14 }}>
             <div>
               <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', display: 'block', marginBottom: 6 }}>Question</label>
@@ -77,11 +81,19 @@ export default function QuestionBank() {
                 style={{ width: '100%', minHeight: 80, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', fontFamily: 'DM Sans' }} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-              <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} options={[{ value: 'mcq', label: 'MCQ' }, { value: 'true_false', label: 'True/False' }, { value: 'short', label: 'Short Answer' }]} />
+              {/* QuestionType enum (schema): MCQ | WRITTEN | FILE_UPLOAD | SCRIPTURE.
+                  Pre-fix had 'true_false' and 'short' which the server rejected
+                  with a Prisma enum error. WRITTEN replaces both. */}
+              <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} options={[
+                { value: 'MCQ', label: 'MCQ' },
+                { value: 'WRITTEN', label: 'Written / Short Answer' },
+                { value: 'FILE_UPLOAD', label: 'File Upload' },
+                { value: 'SCRIPTURE', label: 'Scripture Reflection' },
+              ]} />
               <Select label="Difficulty" value={form.difficulty} onChange={e => setForm(f => ({ ...f, difficulty: e.target.value }))} options={DIFF} />
               <Input label="Marks" type="number" value={form.marks} onChange={e => setForm(f => ({ ...f, marks: e.target.value }))} />
             </div>
-            {form.type === 'mcq' && (
+            {form.type === 'MCQ' && (
               <div>
                 <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', display: 'block', marginBottom: 8 }}>Options (select correct answer)</label>
                 {form.options.map((opt, i) => (
@@ -94,13 +106,10 @@ export default function QuestionBank() {
                 ))}
               </div>
             )}
-            {form.type === 'true_false' && (
-              <Select label="Correct Answer" value={form.answer} onChange={e => setForm(f => ({ ...f, answer: e.target.value }))} options={[{ value: 'true', label: 'True' }, { value: 'false', label: 'False' }]} />
-            )}
             <Input label="Explanation (optional)" value={form.explanation} onChange={e => setForm(f => ({ ...f, explanation: e.target.value }))} />
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-            <Btn variant="outline" onClick={() => setOpen(false)}>Cancel</Btn>
+            <Btn variant="outline" onClick={closeQBModal}>Cancel</Btn>
             <Btn onClick={handleCreate}>Add Question</Btn>
           </div>
         </Modal>
