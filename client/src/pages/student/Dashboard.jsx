@@ -13,14 +13,15 @@ export default function StudentDashboard() {
 
   const exams = (upcoming?.exams || []).slice(0, 5);
   const subjectAttendance = stats?.subjectAttendance || [];
-  const attendanceVal = stats?.attendance ?? 0;
+  const attendanceVal = stats?.attendance ?? null;
+  const hasAttendance = attendanceVal !== null;
 
   return (
     <PageWrapper title={`Welcome, ${user?.firstName || 'Student'}`} subtitle="Your academic overview">
       <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
         <StatCard icon="📚" label="Enrolled Subjects" value={stats?.subjects || 0} color="#0F2B4A" />
         <StatCard icon="🏆" label="Current CGPA" value={stats?.cgpa || '—'} color="#166534" />
-        <StatCard icon="📅" label="Attendance" value={`${attendanceVal}%`} color={attendanceVal < 75 ? '#991B1B' : '#0F766E'} />
+        <StatCard icon="📅" label="Attendance" value={hasAttendance ? `${attendanceVal}%` : '—'} color={hasAttendance && attendanceVal < 75 ? '#991B1B' : '#0F766E'} />
         <StatCard icon="💰" label="Balance Due" value={balance?.outstanding > 0 ? `₹${Number(balance.outstanding).toLocaleString()}` : 'Clear'} color={balance?.outstanding > 0 ? '#991B1B' : '#166534'} />
       </div>
 

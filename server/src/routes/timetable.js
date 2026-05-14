@@ -82,8 +82,32 @@ router.post('/', authenticate, adminOrTA, async (req, res, next) => {
     if (!semesterId || !subjectId || !day || !startTime || !endTime) {
       return res.status(400).json({ error: 'semesterId, subjectId, day, startTime, endTime required' });
     }
+    if (startTime >= endTime) {
+      return res.status(400).json({ error: 'endTime must be after startTime' });
+    }
+    const dayUpper = day.toUpperCase();
+    // Faculty double-booking check: reject if same faculty has any overlapping slot on the same day.
+    // Times are stored as canonical "HH:MM" strings, so lexicographic compare is correct.
+    if (facultyId) {
+      const conflict = await prisma.timetableSlot.findFirst({
+        where: {
+          facultyId,
+          day: dayUpper,
+          AND: [
+            { startTime: { lt: endTime } },
+            { endTime: { gt: startTime } },
+          ],
+        },
+        include: { subject: { select: { code: true, name: true } } },
+      });
+      if (conflict) {
+        return res.status(409).json({
+          error: `Faculty already has ${conflict.subject?.code || 'another slot'} on ${dayUpper} from ${conflict.startTime} to ${conflict.endTime}.`,
+        });
+      }
+    }
     const slot = await prisma.timetableSlot.create({
-      data: { semesterId, subjectId, facultyId: facultyId || null, day: day.toUpperCase(), startTime, endTime, room: room || null, notes: notes || null },
+      data: { semesterId, subjectId, facultyId: facultyId || null, day: dayUpper, startTime, endTime, room: room || null, notes: notes || null },
     });
     res.status(201).json({ slot });
   } catch (err) { next(err); }

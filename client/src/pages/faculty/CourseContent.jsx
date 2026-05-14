@@ -78,7 +78,11 @@ export default function CourseContent() {
                     </div>
                     <Badge color={TYPE_COLORS[c.type] || 'gray'}>{c.type}</Badge>
                     <Badge color={c.visible ? 'green' : 'gray'}>{c.visible ? 'Visible' : 'Hidden'}</Badge>
-                    <a href={c.fileUrl || c.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#0F2B4A', textDecoration: 'underline' }}>View</a>
+                    {(c.fileUrl || c.url) ? (
+                      <a href={c.fileUrl || c.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#0F2B4A', textDecoration: 'underline' }}>View</a>
+                    ) : (
+                      <span style={{ fontSize: 12, color: '#7B8494' }}>—</span>
+                    )}
                     <button onClick={() => handleDelete(c.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#991B1B', fontSize: 12 }}>Delete</button>
                   </div>
                 ))}

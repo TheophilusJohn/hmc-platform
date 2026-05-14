@@ -81,6 +81,11 @@ router.get('/', authenticate, facultyOrAbove, async (req, res, next) => {
 router.get('/:id/academic-summary', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const fp = await prisma.facultyProfile.findUnique({ where: { userId: req.user.id } });
+    // FACULTY must have a profile to scope the query. Without one, the previous
+    // ternary fell through to `{}` and returned every enrollment for the student.
+    if (req.user.role === 'FACULTY' && !fp) {
+      return res.status(403).json({ error: 'Faculty profile not found' });
+    }
     const student = await prisma.studentProfile.findUnique({
       where: { id: req.params.id },
       include: {
@@ -88,7 +93,7 @@ router.get('/:id/academic-summary', authenticate, facultyOrAbove, async (req, re
         programme: { select: { name: true } },
         batch: { select: { name: true, currentYear: true } },
         enrollments: {
-          where: fp && req.user.role === 'FACULTY' ? { subject: { facultyId: fp.id } } : {},
+          where: req.user.role === 'FACULTY' ? { subject: { facultyId: fp.id } } : {},
           include: { subject: { select: { id: true, code: true, name: true, totalMarks: true, passMark: true, creditHours: true } } },
         },
         attendance: { select: { status: true } },

@@ -32,21 +32,31 @@ export default function CourseContent() {
               <h4 style={{ fontFamily: "'Playfair Display',serif", fontSize: 14, color: '#0F2B4A', margin: '0 0 10px', borderBottom: '2px solid #EEF4FA', paddingBottom: 6 }}>
                 {week === '0' ? 'General' : `Week ${week}`}
               </h4>
-              {grouped[week].map(c => (
-                <a key={c.id} href={c.fileUrl || c.url} target="_blank" rel="noreferrer"
-                  style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, marginBottom: 6, background: '#fff', textDecoration: 'none', color: 'inherit', transition: 'background 0.15s' }}
-                  onMouseEnter={e => e.currentTarget.style.background = '#F8F9FA'}
-                  onMouseLeave={e => e.currentTarget.style.background = '#fff'}>
-                  <span style={{ fontSize: 20 }}>{TYPE_ICONS[c.type] || '📄'}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: 13 }}>{c.title}</div>
-                    {c.description && <div style={{ fontSize: 12, color: '#7B8494', marginTop: 1 }}>{c.description}</div>}
-                    {c.deadline && <div style={{ fontSize: 11, color: '#C9920A', marginTop: 2 }}>Due: {new Date(c.deadline).toLocaleDateString('en-IN')}</div>}
-                  </div>
-                  <Badge color={TYPE_COLORS[c.type] || 'gray'}>{c.type}</Badge>
-                  <span style={{ fontSize: 11, color: '#7B8494' }}>{new Date(c.createdAt).toLocaleDateString('en-IN')}</span>
-                </a>
-              ))}
+              {grouped[week].map(c => {
+                const linkUrl = c.fileUrl || c.url;
+                const rowStyle = { display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, marginBottom: 6, background: '#fff', textDecoration: 'none', color: 'inherit', transition: 'background 0.15s' };
+                const body = (
+                  <>
+                    <span style={{ fontSize: 20 }}>{TYPE_ICONS[c.type] || '📄'}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500, fontSize: 13 }}>{c.title}</div>
+                      {c.description && <div style={{ fontSize: 12, color: '#7B8494', marginTop: 1 }}>{c.description}</div>}
+                      {c.deadline && <div style={{ fontSize: 11, color: '#C9920A', marginTop: 2 }}>Due: {new Date(c.deadline).toLocaleDateString('en-IN')}</div>}
+                    </div>
+                    <Badge color={TYPE_COLORS[c.type] || 'gray'}>{c.type}</Badge>
+                    <span style={{ fontSize: 11, color: '#7B8494' }}>{new Date(c.createdAt).toLocaleDateString('en-IN')}</span>
+                  </>
+                );
+                return linkUrl ? (
+                  <a key={c.id} href={linkUrl} target="_blank" rel="noreferrer" style={rowStyle}
+                    onMouseEnter={e => e.currentTarget.style.background = '#F8F9FA'}
+                    onMouseLeave={e => e.currentTarget.style.background = '#fff'}>
+                    {body}
+                  </a>
+                ) : (
+                  <div key={c.id} style={rowStyle}>{body}</div>
+                );
+              })}
             </div>
           ))}
           {contentList.length === 0 && (

@@ -22,7 +22,7 @@ export default function MySubjects() {
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 10, color: '#7B8494' }}>ATTENDANCE</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: s.attendanceRate < 75 ? '#991B1B' : '#166534' }}>{s.attendanceRate ?? '—'}%</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: s.attendanceRate != null && s.attendanceRate < 75 ? '#991B1B' : '#166534' }}>{s.attendanceRate != null ? `${s.attendanceRate}%` : '—'}</div>
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 10, color: '#7B8494' }}>CREDITS</div>
