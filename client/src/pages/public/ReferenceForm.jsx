@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import api from '../../utils/api';
 
 const QUESTIONS = [
@@ -12,15 +12,14 @@ const QUESTIONS = [
 ];
 
 export default function ReferenceForm() {
-  const [params] = useSearchParams();
-  const token = params.get('token');
+  const { token } = useParams();
   const [status, setStatus] = useState('loading'); // loading | ready | submitting | done | error
   const [info, setInfo] = useState(null);
   const [answers, setAnswers] = useState({});
 
   useEffect(() => {
     if (!token) { setStatus('error'); return; }
-    api.get(`/references/validate/${token}`)
+    api.get(`/references/${token}`)
       .then(({ data }) => { setInfo(data); setStatus('ready'); })
       .catch(() => setStatus('error'));
   }, [token]);
@@ -29,10 +28,13 @@ export default function ReferenceForm() {
     e.preventDefault();
     setStatus('submitting');
     try {
-      await api.post(`/references/submit/${token}`, { answers });
+      await api.put(`/references/${token}/submit`, { answers });
       setStatus('done');
     } catch { setStatus('error'); }
   };
+
+  const applicantName = [info?.applicant?.firstName, info?.applicant?.lastName].filter(Boolean).join(' ');
+  const programmeName = info?.applicant?.programme?.name || '';
 
   if (status === 'loading') return <Shell><div style={{ color: '#7B8494', padding: 40, textAlign: 'center' }}>Validating your reference link…</div></Shell>;
   if (status === 'error') return <Shell><div style={{ padding: 40, textAlign: 'center' }}>
@@ -43,7 +45,7 @@ export default function ReferenceForm() {
   if (status === 'done') return <Shell><div style={{ padding: 40, textAlign: 'center' }}>
     <div style={{ fontSize: 56, marginBottom: 16 }}>✅</div>
     <h2 style={{ fontFamily: "'Playfair Display',serif", color: '#0F2B4A' }}>Reference Submitted</h2>
-    <p style={{ color: '#7B8494' }}>Thank you. Your reference for <strong>{info?.applicantName}</strong> has been received and will be reviewed by the admissions committee.</p>
+    <p style={{ color: '#7B8494' }}>Thank you. Your reference for <strong>{applicantName}</strong> has been received and will be reviewed by the admissions committee.</p>
   </div></Shell>;
 
   return (
@@ -51,7 +53,7 @@ export default function ReferenceForm() {
       <div style={{ maxWidth: 600 }}>
         <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: '#0F2B4A', margin: '0 0 6px' }}>Pastoral Reference Form</h2>
         <p style={{ color: '#7B8494', fontSize: 14, margin: '0 0 24px' }}>
-          You have been asked to provide a reference for <strong>{info?.applicantName}</strong> who has applied to the <strong>{info?.programmeName}</strong> programme.
+          You have been asked to provide a reference for <strong>{applicantName}</strong> who has applied to the <strong>{programmeName}</strong> programme.
         </p>
         <div style={{ padding: '12px 16px', background: '#EEF4FA', borderRadius: 8, fontSize: 13, color: '#0F2B4A', marginBottom: 24 }}>
           All information you provide is confidential and will only be reviewed by the admissions committee of Harvest Mission College.

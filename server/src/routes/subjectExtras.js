@@ -179,7 +179,7 @@ router.get('/:id/enrolled-students', authenticate, facultyOrAbove, async (req, r
 // GET / — return subjects in {subjects: [...]} shape for frontend
 router.get('/', authenticate, async (req, res, next) => {
   try {
-    const { search, semesterId, batchId, programmeId } = req.query;
+    const { search, semesterId, batchId, programmeId, mine } = req.query;
     const where = {};
     if (semesterId) where.semesterId = semesterId;
     if (batchId) where.batchId = batchId;
@@ -188,6 +188,13 @@ router.get('/', authenticate, async (req, res, next) => {
       { name: { contains: search, mode: 'insensitive' } },
       { code: { contains: search, mode: 'insensitive' } },
     ];
+    // Faculty must only see their own subjects, regardless of `mine=true`.
+    // When `mine=true` is requested by any role, also scope to caller's facultyId.
+    if (req.user.role === 'FACULTY' || mine === 'true') {
+      const fp = await prisma.facultyProfile.findFirst({ where: { userId: req.user.id }, select: { id: true } });
+      if (!fp) return res.json({ subjects: [] });
+      where.facultyId = fp.id;
+    }
     const subjects = await prisma.subject.findMany({
       where,
       include: {

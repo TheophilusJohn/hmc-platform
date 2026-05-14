@@ -8,10 +8,10 @@ export default function StudentDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { data: stats } = useApi('/me/stats');
-  const { data: upcoming } = useApi('/exams?upcoming=true&limit=5');
+  const { data: upcoming } = useApi('/exams/my-exams?filter=upcoming');
   const { data: balance } = useApi('/fees/my-balance');
 
-  const exams = upcoming?.exams || [];
+  const exams = (upcoming?.exams || []).slice(0, 5);
   const subjectAttendance = stats?.subjectAttendance || [];
   const attendanceVal = stats?.attendance ?? 0;
 
