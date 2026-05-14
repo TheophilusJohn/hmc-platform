@@ -2,11 +2,18 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { logAudit } = require('../middleware/audit');
+
+// Reset tokens are sent to the user as a raw value but stored as a SHA-256 hash.
+// A DB compromise then can't be used to mint password resets on live accounts.
+function hashResetToken(raw) {
+  return crypto.createHash('sha256').update(String(raw)).digest('hex');
+}
 
 const TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || '8h';
 const SESSION_HOURS = 8;
@@ -175,18 +182,19 @@ router.post('/forgot-password', async (req, res, next) => {
       return res.json({ message: 'If that account exists, a reset link has been sent.' });
     }
 
-    const resetToken = uuidv4();
+    // Send the raw token to the user; persist only its hash.
+    const rawResetToken = uuidv4();
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
     await prisma.userAuth.update({
       where: { userId: user.id },
-      data: { resetToken, resetTokenExpires: expires },
+      data: { resetToken: hashResetToken(rawResetToken), resetTokenExpires: expires },
     });
 
     // Send email via service
     try {
       const { sendPasswordResetEmail } = require('../services/email.service');
-      const resetLink = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+      const resetLink = `${process.env.CLIENT_URL}/reset-password/${rawResetToken}`;
       await sendPasswordResetEmail(user, resetLink);
     } catch (_e) {
       // Log but don't fail
@@ -208,9 +216,10 @@ router.post('/reset-password/:token', async (req, res, next) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
+    // The token in the URL is the raw value emailed to the user; the DB stores its hash.
     const auth = await prisma.userAuth.findFirst({
       where: {
-        resetToken: token,
+        resetToken: hashResetToken(token),
         resetTokenExpires: { gt: new Date() },
       }
     });

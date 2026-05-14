@@ -13,18 +13,28 @@ api.interceptors.request.use(config => {
   return config;
 }, error => Promise.reject(error));
 
+// Guard so a wave of concurrent 401s on token expiry only fires one logout event.
+let authExpiredFired = false;
+export function resetAuthExpiredGuard() { authExpiredFired = false; }
+
 // Response interceptor: handle auth errors
 api.interceptors.response.use(
   response => response,
   error => {
     const status = error.response?.status;
-    const code = error.response?.data?.code;
+    const url = error.config?.url || '';
 
-    if (status === 401) {
+    // 401 on the login endpoint itself is just "wrong credentials" — don't log the user out.
+    const isLoginAttempt = url.includes('/auth/login');
+    if (status === 401 && !isLoginAttempt) {
       localStorage.removeItem('hmc_token');
       localStorage.removeItem('hmc_user');
-      if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login';
+      if (!authExpiredFired) {
+        authExpiredFired = true;
+        // Soft signal — useAuth listens for this and clears React state. The
+        // AuthGuard then routes the user to /login without a full page reload,
+        // preserving in-flight component state where possible.
+        window.dispatchEvent(new CustomEvent('hmc:auth-expired'));
       }
     }
 

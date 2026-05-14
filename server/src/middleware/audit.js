@@ -16,6 +16,25 @@ function deriveTable(path) {
   return segments[0]?.replace(/-/g, '_') || 'unknown';
 }
 
+// Fields we never want to persist in the audit log even when the route returns them.
+const REDACTED_KEYS = new Set([
+  'tempPassword', 'password', 'newPassword', 'currentPassword',
+  'passwordHash', 'tempPasswordHash',
+  'token', 'resetToken', 'jwt',
+]);
+
+function redact(value, depth = 0) {
+  if (value == null || depth > 4) return value;
+  if (Array.isArray(value)) return value.map(v => redact(v, depth + 1));
+  if (typeof value !== 'object') return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (REDACTED_KEYS.has(k)) out[k] = '[REDACTED]';
+    else out[k] = redact(v, depth + 1);
+  }
+  return out;
+}
+
 /**
  * Auto-audit middleware — wraps res.json to capture response and log
  * Only logs mutating operations (POST/PUT/PATCH/DELETE)
@@ -32,7 +51,6 @@ function auditLog(req, res, next) {
   }
 
   const originalJson = res.json.bind(res);
-  const startBody = { ...req.body };
 
   res.json = function (data) {
     // Log asynchronously — don't delay response
@@ -46,7 +64,7 @@ function auditLog(req, res, next) {
               tableName: deriveTable(req.path),
               recordId: req.params?.id || data?.id || data?.data?.id || null,
               oldValue: req.oldValue || null, // set by route handler if needed
-              newValue: data?.id ? data : null,
+              newValue: data?.id ? redact(data) : null,
               ipAddress: req.ip || req.connection?.remoteAddress,
               userAgent: req.headers['user-agent'],
             }

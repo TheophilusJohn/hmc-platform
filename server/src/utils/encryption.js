@@ -7,13 +7,24 @@ const crypto = require('crypto');
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32; // bytes for AES-256
 
-function getKey() {
+// Derive two domain-separated keys from a single master ENCRYPTION_KEY so we
+// don't reuse the same bytes for both AES-GCM encryption and the HMAC used by
+// hash(). Using HKDF-Expand-like construction with distinct info strings.
+let _master, _encKey, _macKey;
+function ensureKeys() {
+  if (_master) return;
   const key = process.env.ENCRYPTION_KEY;
   if (!key || key.length < KEY_LENGTH) {
     throw new Error('ENCRYPTION_KEY must be at least 32 characters');
   }
-  return Buffer.from(key.slice(0, KEY_LENGTH), 'utf-8');
+  _master = Buffer.from(key, 'utf-8');
+  // HMAC-SHA256(master, info) gives 32 bytes — exactly what AES-256 needs.
+  _encKey = crypto.createHmac('sha256', _master).update('hmc:encryption:v1').digest();
+  _macKey = crypto.createHmac('sha256', _master).update('hmc:hmac:v1').digest();
 }
+
+function getEncryptionKey() { ensureKeys(); return _encKey; }
+function getMacKey() { ensureKeys(); return _macKey; }
 
 /**
  * Encrypt a string value
@@ -21,7 +32,7 @@ function getKey() {
  */
 function encrypt(plaintext) {
   if (!plaintext) return null;
-  const key = getKey();
+  const key = getEncryptionKey();
   const iv = crypto.randomBytes(12); // 96-bit IV for GCM
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
   
@@ -38,7 +49,7 @@ function encrypt(plaintext) {
 function decrypt(ciphertext) {
   if (!ciphertext) return null;
   try {
-    const key = getKey();
+    const key = getEncryptionKey();
     const [ivHex, authTagHex, encryptedHex] = ciphertext.split(':');
 
     const iv = Buffer.from(ivHex, 'hex');
@@ -63,7 +74,7 @@ function decrypt(ciphertext) {
  */
 function hash(value) {
   if (!value) return null;
-  return crypto.createHmac('sha256', getKey()).update(String(value)).digest('hex');
+  return crypto.createHmac('sha256', getMacKey()).update(String(value)).digest('hex');
 }
 
 /**

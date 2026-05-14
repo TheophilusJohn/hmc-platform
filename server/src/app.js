@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { logger } = require('./utils/logger');
+const { auditLog } = require('./middleware/audit');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -95,6 +96,10 @@ app.set('trust proxy', 1);
     logger.debug(`${req.method} ${req.path}`);
     next();
   });
+
+  // Auto-audit POST/PUT/PATCH/DELETE on /api/* (skips /api/auth/login and /logout).
+  // Mount before the routes so res.json is wrapped before any handler runs.
+  app.use('/api', auditLog);
 
   // Health check (no auth)
   app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

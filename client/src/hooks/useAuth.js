@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import api from '../utils/api';
+import api, { resetAuthExpiredGuard } from '../utils/api';
 
 function decodeJWT(token) {
   try {
@@ -44,6 +44,13 @@ export function useAuth() {
     }).catch(() => {});
   }, [user?.id]);
 
+  // Listen for the soft auth-expired signal from the axios interceptor.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('hmc:auth-expired', onExpired);
+    return () => window.removeEventListener('hmc:auth-expired', onExpired);
+  }, []);
+
   const login = useCallback(async (email, password) => {
     setLoading(true);
     setError(null);
@@ -52,6 +59,8 @@ export function useAuth() {
       const { token, user: userData } = res.data;
       localStorage.setItem('hmc_token', token);
       localStorage.setItem('hmc_user', JSON.stringify(userData));
+      // Re-arm the 401 guard so a future expiry fires the event again.
+      resetAuthExpiredGuard();
       const decoded = decodeJWT(token);
       const merged = { ...decoded, ...userData };
       setUser(merged);
