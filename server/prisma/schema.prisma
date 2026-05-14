@@ -337,6 +337,7 @@ model UserAuth {
   twoFaSecret         String?   // ENCRYPTED
   resetToken          String?
   resetTokenExpires   DateTime?
+  lockedUntil         DateTime?
 }
 
 model StudentProfile {
@@ -829,6 +830,7 @@ model Waiver {
   ledgerId        String?
   waiverType      WaiverType
   amountOrPercent Decimal      @db.Decimal(10, 2)
+  actualWaivedAmount Decimal? @db.Decimal(10, 2)
   reason          WaiverReason
   customReason    String?
   validUntil      DateTime?
