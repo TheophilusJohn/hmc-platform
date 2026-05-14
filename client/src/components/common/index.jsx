@@ -191,9 +191,9 @@ export function Sidebar({ items = [], active, onSelect, user, onLogout }) {
       <nav style={{ flex: 1, padding: '8px 0', overflowY: 'auto' }}>
         {items.map((item, i) => {
           if (item.divider) return <div key={i} style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '6px 12px' }} />;
-          const isActive = active === item.key;
+          const isActive = active === item.id;
           return (
-            <button key={item.key} onClick={() => onSelect?.(item.key)} style={{
+            <button key={item.id} onClick={() => onSelect?.(item.id)} style={{
               display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 16px', border: 'none',
               background: isActive ? 'rgba(201,146,10,0.15)' : 'transparent', color: isActive ? '#C9920A' : 'rgba(255,255,255,0.75)',
               cursor: 'pointer', fontSize: 13, fontFamily: 'DM Sans,sans-serif', textAlign: 'left', borderLeft: isActive ? '3px solid #C9920A' : '3px solid transparent',

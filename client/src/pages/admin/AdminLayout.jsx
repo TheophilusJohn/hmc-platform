@@ -5,21 +5,21 @@ import { useAuth } from '../../hooks/useAuth';
 import { useNotifications } from '../../hooks/useNotifications';
 
 const NAV = [
-  { key: '', label: 'Dashboard', icon: '🏠' },
+  { id: '', label: 'Dashboard', icon: '🏠' },
   { divider: true },
-  { key: 'users', label: 'User Management', icon: '👥' },
-  { key: 'programmes', label: 'Programmes', icon: '🎓' },
-  { key: 'semesters', label: 'Semesters', icon: '📅' },
-  { key: 'subjects', label: 'Subjects', icon: '📚' },
+  { id: 'users', label: 'User Management', icon: '👥' },
+  { id: 'programmes', label: 'Programmes', icon: '🎓' },
+  { id: 'semesters', label: 'Semesters', icon: '📅' },
+  { id: 'subjects', label: 'Subjects', icon: '📚' },
   { divider: true },
-  { key: 'admissions', label: 'Admissions', icon: '📋' },
-  { key: 'finance', label: 'Finance', icon: '₹' },
-  { key: 'fee-settings', label: 'Fee Settings', icon: '⚙' },
+  { id: 'admissions', label: 'Admissions', icon: '📋' },
+  { id: 'finance', label: 'Finance', icon: '₹' },
+  { id: 'fee-settings', label: 'Fee Settings', icon: '⚙' },
   { divider: true },
-  { key: 'reports', label: 'Reports', icon: '📊' },
-  { key: 'messages', label: 'Messages', icon: '✉' },
+  { id: 'reports', label: 'Reports', icon: '📊' },
+  { id: 'messages', label: 'Messages', icon: '✉' },
   { divider: true },
-  { key: 'settings', label: 'System Settings', icon: '🔧' },
+  { id: 'settings', label: 'System Settings', icon: '🔧' },
 ];
 
 const titles = { '': 'Dashboard', users: 'User Management', programmes: 'Programmes', semesters: 'Semesters', subjects: 'Subjects', admissions: 'Admissions', finance: 'Finance', 'fee-settings': 'Fee Settings', reports: 'Reports', messages: 'Messages', settings: 'System Settings' };
@@ -38,7 +38,7 @@ export default function AdminLayout() {
         <Sidebar
           items={NAV}
           active={segment}
-          onSelect={key => navigate(`/admin${key ? '/' + key : ''}`)}
+          onSelect={id => navigate(`/admin${id ? '/' + id : ''}`)}
           user={{ name: user?.name || 'Admin', display_id: user?.userIdDisplay }}
           onLogout={logout}
         />
