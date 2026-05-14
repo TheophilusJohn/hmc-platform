@@ -12,7 +12,7 @@ async function authenticate(req, res, next) {
     const token = authHeader.split(' ')[1];
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ error: 'Token expired', code: 'token_expired' });
@@ -41,7 +41,7 @@ async function authenticate(req, res, next) {
       select: { id: true, userIdDisplay: true, role: true, status: true, email: true },
     });
 
-    if (!user || user.status === 'INACTIVE') {
+    if (!user || user.status !== 'ACTIVE') {
       return res.status(401).json({ error: 'Account inactive or not found' });
     }
 

@@ -6,7 +6,7 @@ const TYPE_ICONS = { fee: '💰', exam: '📝', assignment: '✏️', general: '
 const TYPE_COLORS = { fee: 'amber', exam: 'purple', assignment: 'teal', general: 'navy', marks: 'green', attendance: 'red', hostel: 'navy' };
 
 export default function Notifications() {
-  const { data, refetch } = useApi('/notifications/my');
+  const { data, refetch } = useApi('/notifications');
   const notifications = data?.notifications || [];
 
   const markRead = async (id) => {

@@ -141,7 +141,7 @@ router.get('/stats', authenticate, async (req, res, next) => {
         prisma.studentSubjectEnrollment.findMany({
           where: { subject: { facultyId: fp.id } }, distinct: ['studentId'], select: { studentId: true },
         }),
-        prisma.exam.count({ where: { subject: { facultyId: fp.id }, endTime: { gte: today, lt: tomorrow } } }),
+        prisma.exam.count({ where: { subject: { facultyId: fp.id }, endDatetime: { gte: today, lt: tomorrow } } }),
       ]);
       // Pending exams to grade (top 5 by submission count)
       const examGroups = await prisma.submission.groupBy({

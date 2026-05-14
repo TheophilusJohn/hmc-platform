@@ -12,7 +12,7 @@ export function Marksheet() {
   const { data: marksheet } = useApi(semId ? `/marksheet?semesterId=${semId}` : '/marksheet/latest');
   const marks = marksheet?.subjects || [];
 
-  const downloadTranscript = () => api.get('/transcripts/my', { responseType: 'blob' }).then(r => {
+  const downloadTranscript = () => api.get('/transcripts/unofficial/my', { responseType: 'blob' }).then(r => {
     const l = document.createElement('a'); l.href = URL.createObjectURL(r.data); l.download = 'transcript.pdf'; l.click();
   });
 

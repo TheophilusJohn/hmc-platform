@@ -40,7 +40,7 @@ router.get('/my-subjects', authenticate, async (req, res, next) => {
           subject: {
             include: {
               faculty: { select: { firstName: true, lastName: true } },
-              units: { include: { contents: { select: { id: true } } } },
+              units: { include: { content: { select: { id: true } } } },
             },
           },
         },

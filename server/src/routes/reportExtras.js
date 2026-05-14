@@ -108,24 +108,24 @@ router.get('/admissions', authenticate, adminOnly, async (req, res, next) => {
       orderBy: { createdAt: 'desc' },
     });
     const byStage = {};
-    for (const a of applicants) byStage[a.currentStage] = (byStage[a.currentStage] || 0) + 1;
+    for (const a of applicants) byStage[a.pipelineStage] = (byStage[a.pipelineStage] || 0) + 1;
     const rows = applicants.map(a => {
       const fd = a.formData || {};
       return {
-        application_no: a.applicationNumber || a.id.slice(0, 8),
+        application_no: a.applicationNo || a.id.slice(0, 8),
         name: fd.firstName ? `${fd.firstName} ${fd.lastName || ''}`.trim() : (fd.fullName || ''),
         email: fd.email || '',
         programme: a.programme?.name || '',
-        stage: a.currentStage,
-        type: fd.studentType || '',
+        stage: a.pipelineStage,
+        type: fd.studentType || a.studentType || '',
         applied: a.createdAt,
       };
     });
     res.json({
       summary: {
         total: applicants.length,
-        submitted: byStage['SUBMITTED'] || 0,
-        accepted: byStage['ACCEPTED'] || byStage['ENROLLED'] || 0,
+        received: byStage['RECEIVED'] || 0,
+        accepted: (byStage['ACCEPTED'] || 0) + (byStage['ENROLLED'] || 0),
         rejected: byStage['REJECTED'] || 0,
       },
       rows,
@@ -185,21 +185,32 @@ router.get('/attendance', authenticate, facultyOrAbove, async (req, res, next) =
 router.get('/referrals', authenticate, adminOnly, async (req, res, next) => {
   try {
     const referrals = await prisma.referral.findMany({
-      include: { referrer: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } } },
+      include: {
+        referrer: { select: { firstName: true, lastName: true, studentType: true, user: { select: { userIdDisplay: true } } } },
+        referredApplicant: { select: { formData: true } },
+        programme: { select: { domesticIncentiveInr: true, internationalIncentiveUsd: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
-    const rows = referrals.map(r => ({
-      referrer: r.referrer ? `${r.referrer.firstName} ${r.referrer.lastName}` : '',
-      referrer_id: r.referrer?.user?.userIdDisplay || '',
-      referee_email: r.refereeEmail || '',
-      status: r.status,
-      reward: r.rewardAmount ? Number(r.rewardAmount) : 0,
-      created: r.createdAt,
-    }));
+    const rows = referrals.map(r => {
+      const fd = r.referredApplicant?.formData || {};
+      const isIntl = r.referrer?.studentType === 'INTERNATIONAL';
+      const reward = r.status === 'REWARDED'
+        ? Number(isIntl ? r.programme?.internationalIncentiveUsd : r.programme?.domesticIncentiveInr) || 0
+        : 0;
+      return {
+        referrer: r.referrer ? `${r.referrer.firstName} ${r.referrer.lastName}` : '',
+        referrer_id: r.referrer?.user?.userIdDisplay || '',
+        referee_email: fd.email || '',
+        status: r.status,
+        reward,
+        created: r.createdAt,
+      };
+    });
     res.json({
       summary: {
         total: referrals.length,
-        converted: referrals.filter(r => r.status === 'CONVERTED' || r.status === 'COMPLETED').length,
+        rewarded: referrals.filter(r => r.status === 'REWARDED').length,
         pending: referrals.filter(r => r.status === 'PENDING').length,
         total_rewards: rows.reduce((s, r) => s + r.reward, 0),
       },

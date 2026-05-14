@@ -127,6 +127,9 @@ router.post('/:id/charge-student', authenticate, adminOnly, async (req, res, nex
     const isIntl = sp.studentType === 'INTERNATIONAL';
     const defaultAmount = isIntl ? Number(ft.internationalAmount || ft.domesticAmount) : Number(ft.domesticAmount);
     const amt = (customAmount !== undefined && customAmount !== '' && !isNaN(Number(customAmount))) ? Number(customAmount) : defaultAmount;
+    if (!Number.isFinite(amt) || amt <= 0) {
+      return res.status(400).json({ error: 'Charge amount must be a positive number' });
+    }
     const entry = await prisma.studentFeeLedger.create({
       data: {
         studentId,

@@ -18,8 +18,17 @@ export default function Gradebook() {
     await api.post(`/exams/${examId}/override`, { studentId, marks });
   };
 
-  const handleRevalDecision = async (id, action, notes) => {
-    await api.put(`/revaluation/${id}`, { status: action, notes });
+  const handleRevalDecision = async (id, action) => {
+    if (action === 'accepted') {
+      const marks = window.prompt('Enter new marks for this submission:');
+      if (marks === null) return;
+      const n = Number(marks);
+      if (!Number.isFinite(n) || n < 0) { alert('Please enter a non-negative number.'); return; }
+      await api.put(`/revaluation/${id}/faculty-grade`, { newMarks: n });
+    } else if (action === 'rejected') {
+      const reason = window.prompt('Reason for rejection (optional):') || '';
+      await api.put(`/revaluation/${id}/reject`, { notes: reason });
+    }
   };
 
   return (

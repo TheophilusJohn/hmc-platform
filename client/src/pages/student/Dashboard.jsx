@@ -38,7 +38,7 @@ export default function StudentDashboard() {
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A' }}>{e.startTime ? new Date(e.startTime).toLocaleDateString('en-IN') : ''}</div>
                 <div style={{ fontSize: 11, color: '#7B8494' }}>{e.startTime ? new Date(e.startTime).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
               </div>
-              {e.canStart && <Btn size="sm" onClick={() => navigate(`/student/exam/${e.id}`)}>Start</Btn>}
+              {e.canStart && <Btn size="sm" onClick={() => navigate(`/student/exams/${e.id}/take`)}>Start</Btn>}
             </div>
           ))}
         </Card>

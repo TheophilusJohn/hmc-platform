@@ -285,8 +285,8 @@ model User {
   id              String     @id @default(uuid())
   userIdDisplay   String     @unique // HMC-S-XXXX / HMC-F-XXXX etc.
   role            Role
-  email           String     @unique // ENCRYPTED at app layer
-  phone           String?    // ENCRYPTED
+  email           String     @unique
+  phone           String?
   status          UserStatus @default(ACTIVE)
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
@@ -879,6 +879,7 @@ model Applicant {
   decision          String?       // accept | reject | waitlist
   decisionReason    String?
   decisionAt        DateTime?
+  decisionMakerId   String?
   offerExpiresAt    DateTime?
   convertedToUserId String?
   intakeYear        Int
@@ -889,7 +890,7 @@ model Applicant {
 
   programme         Programme     @relation(fields: [programmeId], references: [id], onDelete: Restrict)
   interviewer       User?         @relation("Interviewer", fields: [interviewerId], references: [id], onDelete: SetNull)
-  decisionMaker     User?         @relation("DecisionMaker", fields: [id], references: [id], onDelete: SetNull)
+  decisionMaker     User?         @relation("DecisionMaker", fields: [decisionMakerId], references: [id], onDelete: SetNull)
   documents         ApplicantDocument[]
   references        ApplicantReference[]
   referrals         Referral[]    @relation("ReferredApplicant")
@@ -1113,7 +1114,7 @@ model AuditLog {
 model Session {
   id             String   @id @default(uuid())
   userId         String
-  token          String   @unique // ENCRYPTED
+  token          String   @unique
   expiresAt      DateTime
   isExamSession  Boolean  @default(false) // timeout suspended during exam
   device         String?

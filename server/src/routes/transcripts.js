@@ -7,6 +7,17 @@ const { adminOnly, requireRole } = require('../middleware/rbac');
 const pdfService = require('../services/pdf.service');
 const notif = require('../services/notification.service');
 
+// GET /api/transcripts/unofficial/my — student downloads their own unofficial transcript
+router.get('/unofficial/my', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+  try {
+    const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id }, select: { id: true } });
+    if (!sp) return res.status(404).json({ error: 'Student profile not found' });
+    const pdfBuffer = await pdfService.generateUnofficialTranscript(sp.id);
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="HMC-Unofficial-Transcript.pdf"' });
+    res.send(pdfBuffer);
+  } catch (err) { next(err); }
+});
+
 router.post('/unofficial/:studentId', authenticate, async (req, res, next) => {
   try {
     if (req.user.role === 'STUDENT') {
@@ -48,13 +59,13 @@ router.post('/official/generate/:requestId', authenticate, adminOnly, async (req
     if (!request) return res.status(404).json({ error: 'Request not found' });
 
     const { v4: uuidv4 } = require('uuid');
-    const verificationId = uuidv4();
+    const verificationUuid = uuidv4();
 
-    const pdfBuffer = await pdfService.generateOfficialTranscript(request.studentId, req.params.requestId, verificationId);
+    const pdfBuffer = await pdfService.generateOfficialTranscript(request.studentId, req.params.requestId, verificationUuid);
 
     await prisma.officialTranscriptRequest.update({
       where: { id: req.params.requestId },
-      data: { status: 'READY', verificationId, generatedAt: new Date(), processedById: req.user.id },
+      data: { status: 'READY', verificationUuid, generatedById: req.user.id },
     });
 
     const sp = await prisma.studentProfile.findUnique({
@@ -96,7 +107,7 @@ router.get('/official/my-requests', authenticate, async (req, res, next) => {
 router.get('/verify/:uuid', async (req, res, next) => {
   try {
     const request = await prisma.officialTranscriptRequest.findFirst({
-      where: { verificationId: req.params.uuid, status: 'READY' },
+      where: { verificationUuid: req.params.uuid, status: 'READY' },
       include: { student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } } },
     });
     if (!request) return res.status(404).json({ valid: false, message: 'Transcript not found or invalid QR code.' });
@@ -107,7 +118,7 @@ router.get('/verify/:uuid', async (req, res, next) => {
         name: `${request.student?.firstName || ''} ${request.student?.lastName || ''}`.trim(),
         id: request.student?.user?.userIdDisplay,
       },
-      issuedAt: request.generatedAt,
+      issuedAt: request.updatedAt,
       purpose: request.purpose,
     });
   } catch (err) { next(err); }

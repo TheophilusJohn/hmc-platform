@@ -9,11 +9,13 @@ const AUTOSAVE_INTERVAL = 30000; // 30s
 function Timer({ seconds, onExpire }) {
   const [left, setLeft] = useState(seconds);
   const timerRef = useRef(null);
+  const onExpireRef = useRef(onExpire);
+  useEffect(() => { onExpireRef.current = onExpire; }, [onExpire]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
       setLeft(prev => {
-        if (prev <= 1) { clearInterval(timerRef.current); onExpire(); return 0; }
+        if (prev <= 1) { clearInterval(timerRef.current); onExpireRef.current?.(); return 0; }
         return prev - 1;
       });
     }, 1000);
@@ -126,7 +128,7 @@ function PostExam({ exam, submissionId, auto }) {
         <p style={{ color: '#7B8494', fontSize: 14, marginBottom: 24 }}>
           {auto ? 'Your time has elapsed and the exam was auto-submitted.' : 'Your responses have been submitted for grading.'} Reference: <strong>{submissionId}</strong>
         </p>
-        {exam?.showResultAfter && (
+        {exam?.showAnswersAfter && (
           <div style={{ padding: '12px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, marginBottom: 20, fontSize: 13, color: '#166534' }}>
             Results will be available after grading.
           </div>
@@ -151,45 +153,49 @@ export default function ExamTaking() {
   const [answers, setAnswers] = useState({});
   const [flagged, setFlagged] = useState(new Set());
   const [tabSwitches, setTabSwitches] = useState(0);
-  const [sessionId, setSessionId] = useState(null);
   const [submissionId, setSubmissionId] = useState(null);
   const [autoSubmitted, setAutoSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const autosaveRef = useRef(null);
   const tabRef = useRef(0);
+  // Refs so async listeners always read the latest values without re-binding.
+  const answersRef = useRef(answers);
+  useEffect(() => { answersRef.current = answers; }, [answers]);
+  const submitExamRef = useRef(null);
 
   // Load exam
   useEffect(() => {
-    api.get(`/exams/${examId}`).then(({ data }) => setExam(data));
+    api.get(`/exams/${examId}`).then(({ data }) => setExam(data.exam || data));
   }, [examId]);
 
-  // Start exam session
+  // Start exam session — server returns { submission, exam: { ..., questions } }
   const startExam = useCallback(async () => {
     const { data } = await api.post(`/exam-session/${examId}/start`);
-    setSessionId(data.sessionId);
-    setQuestions(data.questions || []);
+    const subId = data.submission?.id;
+    setSubmissionId(subId);
+    setQuestions(data.exam?.questions || []);
+    if (data.exam) setExam(data.exam);
     setPhase('taking');
-    // Set session flag on localStorage to suspend timeout
-    localStorage.setItem('hmc_exam_session', data.sessionId);
+    if (subId) localStorage.setItem('hmc_exam_session', subId);
   }, [examId]);
 
   // Anti-cheat: tab switch detection
   useEffect(() => {
-    if (phase !== 'taking') return;
+    if (phase !== 'taking' || !submissionId) return;
     const handleVisibility = () => {
       if (document.hidden) {
         const count = tabRef.current + 1;
         tabRef.current = count;
         setTabSwitches(count);
-        api.post(`/exam-session/${sessionId}/flag`, { type: 'tab_switch', count }).catch(() => {});
+        api.post(`/exam-session/submissions/${submissionId}/flag`, { type: 'tab_switch', count }).catch(() => {});
         if (count >= TAB_SWITCH_LIMIT) {
-          submitExam(true);
+          submitExamRef.current?.(true);
         }
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [phase, sessionId]);
+  }, [phase, submissionId]);
 
   // Anti-cheat: disable copy-paste
   useEffect(() => {
@@ -205,25 +211,24 @@ export default function ExamTaking() {
     };
   }, [phase]);
 
-  // Auto-save every 30s
+  // Auto-save every 30s — read answers via ref so this effect doesn't re-create on every keystroke
   useEffect(() => {
-    if (phase !== 'taking' || !sessionId) return;
+    if (phase !== 'taking' || !submissionId) return;
     autosaveRef.current = setInterval(async () => {
       try {
-        await api.post(`/exam-session/${sessionId}/autosave`, { answers });
+        await api.put(`/exam-session/submissions/${submissionId}/autosave`, { answers: answersRef.current });
       } catch (_) {}
     }, AUTOSAVE_INTERVAL);
     return () => clearInterval(autosaveRef.current);
-  }, [phase, sessionId, answers]);
+  }, [phase, submissionId]);
 
   // Submit exam
   const submitExam = useCallback(async (auto = false) => {
-    if (submitting) return;
+    if (submitting || !submissionId) return;
     setSubmitting(true);
     clearInterval(autosaveRef.current);
     try {
-      const { data } = await api.post(`/exam-session/${sessionId}/submit`, { answers });
-      setSubmissionId(data.submissionId);
+      await api.post(`/exam-session/submissions/${submissionId}/submit`, { answers: answersRef.current });
       setAutoSubmitted(auto);
       setPhase('post');
       localStorage.removeItem('hmc_exam_session');
@@ -231,7 +236,8 @@ export default function ExamTaking() {
       alert('Failed to submit. Please try again. Your answers are saved locally.');
       setSubmitting(false);
     }
-  }, [sessionId, answers, submitting]);
+  }, [submissionId, submitting]);
+  useEffect(() => { submitExamRef.current = submitExam; }, [submitExam]);
 
   const handleConfirmSubmit = () => {
     if (confirm(`Submit exam now? You have answered ${Object.keys(answers).length} of ${questions.length} questions.`)) {
@@ -332,9 +338,10 @@ export default function ExamTaking() {
               {q.type === 'file_upload' && (
                 <div style={{ padding: '24px', border: '2px dashed #DDE1E7', borderRadius: 8, textAlign: 'center' }}>
                   <input type="file" onChange={async (e) => {
+                    if (!submissionId || !e.target.files[0]) return;
                     const fd = new FormData();
                     fd.append('file', e.target.files[0]);
-                    const { data } = await api.post(`/exam-session/${sessionId}/upload`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                    const { data } = await api.post(`/exam-session/submissions/${submissionId}/upload`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
                     setAnswer(q.id, data.url);
                   }} />
                   {answers[q.id] && <div style={{ marginTop: 8, fontSize: 13, color: '#166534' }}>✅ File uploaded</div>}

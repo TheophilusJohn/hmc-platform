@@ -31,6 +31,8 @@ router.get('/', authenticate, async (req, res, next) => {
       status: u.status, createdAt: u.createdAt,
       firstName: u.studentProfile?.firstName || u.facultyProfile?.firstName,
       lastName: u.studentProfile?.lastName || u.facultyProfile?.lastName,
+      studentProfileId: u.studentProfile?.id || null,
+      facultyProfileId: u.facultyProfile?.id || null,
     }));
     const total = await prisma.user.count({ where });
     res.json({ users: flat, total });

@@ -1,14 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { io } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
-
-let socket = null;
 
 export function useNotifications(user) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [connected, setConnected] = useState(false);
+  // Per-mount socket ref so two layouts can't fight over a shared singleton.
+  const socketRef = useRef(null);
 
   useEffect(() => {
     if (!user) return;
@@ -16,8 +16,8 @@ export function useNotifications(user) {
     const token = localStorage.getItem('hmc_token');
     if (!token) return;
 
-    // Connect socket
-    socket = io('/', { auth: { token }, transports: ['websocket', 'polling'] });
+    const socket = io('/', { auth: { token }, transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
 
     socket.on('connect', () => setConnected(true));
     socket.on('disconnect', () => setConnected(false));
@@ -35,18 +35,17 @@ export function useNotifications(user) {
       toast.success(`Grades released for ${subjectName}`);
     });
 
-    socket.on('payment_confirmed', ({ receiptNo, amount }) => {
+    socket.on('payment_confirmed', ({ receiptNo }) => {
       toast.success(`Payment confirmed! Receipt: ${receiptNo}`);
     });
 
-    // Load initial unread count
     api.get('/notifications/unread-count')
       .then(res => setUnreadCount(res.data.count || 0))
       .catch(() => {});
 
     return () => {
-      socket?.disconnect();
-      socket = null;
+      socket.disconnect();
+      if (socketRef.current === socket) socketRef.current = null;
       setConnected(false);
     };
   }, [user?.id]);

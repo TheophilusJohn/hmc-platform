@@ -46,7 +46,7 @@ router.get('/pending-actions', authenticate, adminOrTA, async (req, res, next) =
     if (excCount > 0) items.push({ type: 'exceptions', severity: 'high', description: `${excCount} academic exception${excCount === 1 ? '' : 's'} awaiting review`, link: '/ta/exceptions' });
     const unassigned = await prisma.subject.count({ where: { facultyId: null, status: 'active' } });
     if (unassigned > 0) items.push({ type: 'unassigned', severity: 'medium', description: `${unassigned} subject${unassigned === 1 ? '' : 's'} without faculty`, link: '/ta/assignments' });
-    const revCount = await prisma.revaluation.count({ where: { status: 'PENDING' } });
+    const revCount = await prisma.revaluation.count({ where: { status: 'pending' } });
     if (revCount > 0) items.push({ type: 'revaluation', severity: 'medium', description: `${revCount} revaluation request${revCount === 1 ? '' : 's'} pending`, link: '/ta/grades' });
     res.json({ items });
   } catch (err) { next(err); }

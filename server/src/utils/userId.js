@@ -18,34 +18,38 @@ async function generateUserId(role) {
   const prefix = prefixes[role];
   if (!prefix) throw new Error(`Unknown role: ${role}`);
 
-  // Count existing users of this role to get next number
-  const count = await prisma.user.count({ where: { role } });
-  const next = count + 1;
+  // Look up the highest existing display ID for this role, not just the count.
+  // (count breaks if any user is hard-deleted; max-id works either way.)
+  // We still retry on collision because two concurrent admissions accepts can
+  // both compute the same next number before either has been inserted.
   const isStudent = role === 'STUDENT';
-  const padded = String(next).padStart(isStudent ? 4 : 3, '0');
-  return `${prefix}-${padded}`;
+  const pad = isStudent ? 4 : 3;
+  const last = await prisma.user.findFirst({
+    where: { role, userIdDisplay: { startsWith: `${prefix}-` } },
+    orderBy: { userIdDisplay: 'desc' },
+    select: { userIdDisplay: true },
+  });
+  let next = 1;
+  if (last?.userIdDisplay) {
+    const seq = parseInt(last.userIdDisplay.split('-').pop(), 10);
+    if (!isNaN(seq)) next = seq + 1;
+  }
+  return `${prefix}-${String(next).padStart(pad, '0')}`;
 }
-
-module.exports = { generateUserId };
-
-
-// server/src/utils/receiptNumber.js
-// Usage: const { getNextReceiptNumber } = require('./receiptNumber');
 
 async function getNextReceiptNumber() {
   const year = new Date().getFullYear();
   const prefix = `RCP-${year}-`;
 
-  // Get last receipt for this year
   const last = await prisma.payment.findFirst({
     where: { receiptNo: { startsWith: prefix } },
     orderBy: { receiptNo: 'desc' },
     select: { receiptNo: true },
   });
 
-  const lastNum = last ? parseInt(last.receiptNo.split('-')[2]) : 0;
+  const lastNum = last ? parseInt(last.receiptNo.split('-')[2], 10) : 0;
   const next = String(lastNum + 1).padStart(4, '0');
   return `${prefix}${next}`;
 }
 
-module.exports = { getNextReceiptNumber };
+module.exports = { generateUserId, getNextReceiptNumber };

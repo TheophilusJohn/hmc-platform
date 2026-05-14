@@ -5,6 +5,31 @@ const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const plagiarismService = require('../services/plagiarism.service');
+const minioService = require('../services/minio.service');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+// Verifies the calling student owns this submission.
+async function requireSubmissionOwner(req, res, next) {
+  try {
+    if (req.user.role !== 'STUDENT') {
+      return res.status(403).json({ error: 'Only students may modify exam submissions' });
+    }
+    const sp = await prisma.studentProfile.findFirst({
+      where: { userId: req.user.id },
+      select: { id: true },
+    });
+    if (!sp) return res.status(403).json({ error: 'Student profile not found' });
+    const sub = await prisma.submission.findUnique({
+      where: { id: req.params.id },
+      select: { studentId: true, status: true, examId: true },
+    });
+    if (!sub) return res.status(404).json({ error: 'Submission not found' });
+    if (sub.studentId !== sp.id) return res.status(403).json({ error: 'Not your submission' });
+    req.submissionMeta = sub;
+    next();
+  } catch (err) { next(err); }
+}
 
 router.post('/:id/start', authenticate, requireRole('STUDENT'), async (req, res, next) => {
   try {
@@ -63,7 +88,7 @@ router.post('/:id/start', authenticate, requireRole('STUDENT'), async (req, res,
   } catch (err) { next(err); }
 });
 
-router.put('/submissions/:id/autosave', authenticate, async (req, res, next) => {
+router.put('/submissions/:id/autosave', authenticate, requireSubmissionOwner, async (req, res, next) => {
   try {
     const { answers, timePerQuestion } = req.body;
     const submission = await prisma.submission.update({
@@ -74,7 +99,7 @@ router.put('/submissions/:id/autosave', authenticate, async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
-router.post('/submissions/:id/flag', authenticate, async (req, res, next) => {
+router.post('/submissions/:id/flag', authenticate, requireSubmissionOwner, async (req, res, next) => {
   try {
     const submission = await prisma.submission.findUnique({ where: { id: req.params.id } });
     const newSwitches = (submission.tabSwitches || 0) + 1;
@@ -86,7 +111,7 @@ router.post('/submissions/:id/flag', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/submissions/:id/similarity-check', authenticate, async (req, res, next) => {
+router.post('/submissions/:id/similarity-check', authenticate, requireSubmissionOwner, async (req, res, next) => {
   try {
     const { text } = req.body;
     if (!text || text.length < 50) return res.json({ score: 0 });
@@ -97,7 +122,7 @@ router.post('/submissions/:id/similarity-check', authenticate, async (req, res, 
   } catch (err) { next(err); }
 });
 
-router.post('/submissions/:id/submit', authenticate, async (req, res, next) => {
+router.post('/submissions/:id/submit', authenticate, requireSubmissionOwner, async (req, res, next) => {
   try {
     const { answers, timePerQuestion } = req.body;
     const submission = await prisma.submission.findUnique({
@@ -146,6 +171,28 @@ router.post('/submissions/:id/submit', authenticate, async (req, res, next) => {
     }
 
     res.json({ submitted: true, status, marks: hasWritten ? null : autoMarks });
+  } catch (err) { next(err); }
+});
+
+// POST /api/exam-session/submissions/:id/upload — file-upload questions
+router.post('/submissions/:id/upload', authenticate, requireSubmissionOwner, upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file provided' });
+    const subId = req.params.id;
+    const safeName = req.file.originalname.replace(/[^\w.\-]/g, '_');
+    let storedPath;
+    try {
+      storedPath = await minioService.uploadFile(
+        req.file.buffer,
+        process.env.MINIO_BUCKET || 'hmc-files',
+        `exam-submissions/${subId}/${Date.now()}-${safeName}`,
+        req.file.mimetype
+      );
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    const url = await minioService.getReadUrl(storedPath);
+    res.json({ url, path: storedPath, filename: safeName });
   } catch (err) { next(err); }
 });
 

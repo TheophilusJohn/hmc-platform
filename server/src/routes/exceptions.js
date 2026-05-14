@@ -4,8 +4,9 @@ const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOrTA } = require('../middleware/rbac');
+const minioService = require('../services/minio.service');
 
-function flatten(e) {
+async function flatten(e) {
   return {
     id: e.id,
     type: e.type,
@@ -13,7 +14,8 @@ function flatten(e) {
     reason: e.reason,
     requestedValue: e.requestedValue,
     newValue: e.newValue,
-    attachmentUrl: e.attachmentUrl,
+    // If attachmentUrl is an object-path (new uploads), sign it; legacy http URLs pass through.
+    attachmentUrl: await minioService.getReadUrl(e.attachmentUrl),
     decisionNotes: e.decisionNotes,
     decidedAt: e.decidedAt,
     createdAt: e.createdAt,
@@ -48,7 +50,8 @@ router.get('/', authenticate, adminOrTA, async (req, res, next) => {
       take: parseInt(limit),
     });
     const total = await prisma.academicException.count({ where });
-    res.json({ exceptions: exceptions.map(flatten), total });
+    const flat = await Promise.all(exceptions.map(flatten));
+    res.json({ exceptions: flat, total });
   } catch (err) { next(err); }
 });
 
@@ -66,7 +69,8 @@ router.get('/my', authenticate, async (req, res, next) => {
       },
       orderBy: { createdAt: 'desc' },
     });
-    res.json({ exceptions: exceptions.map(flatten) });
+    const flat = await Promise.all(exceptions.map(flatten));
+    res.json({ exceptions: flat });
   } catch (err) { next(err); }
 });
 

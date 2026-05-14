@@ -34,7 +34,7 @@ export default function RecordFees() {
               <select value={form.studentId} onChange={e => { setForm(f => ({ ...f, studentId: e.target.value })); setSelected(e.target.value); }}
                 style={{ padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 13, width: '100%', background: '#fff' }}>
                 <option value="">Select student…</option>
-                {(students?.users || []).map(u => <option key={u.id} value={u.id}>{u.firstName} {u.lastName} ({u.userIdDisplay})</option>)}
+                {(students?.users || []).filter(u => u.studentProfileId).map(u => <option key={u.id} value={u.studentProfileId}>{u.firstName} {u.lastName} ({u.userIdDisplay})</option>)}
               </select>
             </div>
             <Input label="Amount (₹)" type="number" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />

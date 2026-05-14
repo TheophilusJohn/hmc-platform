@@ -81,13 +81,59 @@ router.put('/:id/approve', authenticate, adminOrTA, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.put('/:id/faculty-grade', authenticate, async (req, res, next) => {
+router.put('/:id/faculty-grade', authenticate, requireRole('FACULTY', 'TEACHER_ADMIN', 'FULL_ADMIN'), async (req, res, next) => {
   try {
-    const { newMarks, notes } = req.body;
+    const newMarks = Number(req.body.newMarks);
+    const { notes } = req.body;
+    if (!Number.isFinite(newMarks) || newMarks < 0) {
+      return res.status(400).json({ error: 'newMarks must be a non-negative number' });
+    }
+
+    // If the caller is FACULTY, restrict to subjects they teach
+    if (req.user.role === 'FACULTY') {
+      const rev = await prisma.revaluation.findUnique({
+        where: { id: req.params.id },
+        select: { subjectId: true },
+      });
+      if (!rev) return res.status(404).json({ error: 'Revaluation not found' });
+      const fp = await prisma.facultyProfile.findUnique({
+        where: { userId: req.user.id },
+        select: { id: true },
+      });
+      const subj = await prisma.subject.findUnique({
+        where: { id: rev.subjectId },
+        select: { facultyId: true },
+      });
+      if (!fp || subj?.facultyId !== fp.id) {
+        return res.status(403).json({ error: 'You do not teach this subject' });
+      }
+    }
+
     const rev = await prisma.revaluation.update({
       where: { id: req.params.id },
       data: { newMarks, notes, status: 'faculty_grading', facultyGradedAt: new Date() },
     });
+    res.json(rev);
+  } catch (err) { next(err); }
+});
+
+router.put('/:id/reject', authenticate, requireRole('FACULTY', 'TEACHER_ADMIN', 'FULL_ADMIN'), async (req, res, next) => {
+  try {
+    const { notes } = req.body;
+    const rev = await prisma.revaluation.update({
+      where: { id: req.params.id },
+      data: { status: 'rejected', notes: notes || null },
+      include: { student: { include: { user: true } }, subject: { select: { name: true } } },
+    });
+    if (rev.student?.user) {
+      try {
+        await notif.createNotification(
+          rev.student.user.id, 'revaluation_result', 'Revaluation Declined',
+          `Your revaluation request for ${rev.subject?.name || 'a subject'} was declined.`,
+          '/student/marksheet'
+        );
+      } catch (_e) {}
+    }
     res.json(rev);
   } catch (err) { next(err); }
 });

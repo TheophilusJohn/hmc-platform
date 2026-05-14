@@ -20,7 +20,8 @@ export default function Fees() {
     setPaying(true);
     try {
       const { data: order } = await api.post('/payments/create-order', { amount: Number(amount) });
-      const rzp = await loadRazorpay();
+      const loaded = await loadRazorpay();
+      if (!loaded) { alert('Could not load payment gateway.'); setPaying(false); return; }
       const { data: settings } = await api.get('/settings/public');
 
       const options = {
@@ -33,13 +34,13 @@ export default function Fees() {
         prefill: { name: data.studentName, email: data.studentEmail, contact: data.studentPhone },
         theme: { color: '#0F2B4A' },
         handler: async (response) => {
-          await api.post('/payments/verify', response);
+          await api.post('/payments/razorpay/verify', response);
           refetch();
         },
         modal: { ondismiss: () => setPaying(false) }
       };
 
-      const rzpInstance = new rzp(options);
+      const rzpInstance = new window.Razorpay(options);
       rzpInstance.open();
     } catch (e) {
       alert('Could not initiate payment. Please try again.');
@@ -51,15 +52,16 @@ export default function Fees() {
     setPaying(true);
     try {
       const { data: order } = await api.post('/payments/installment-order', { installmentId });
-      const rzp = await loadRazorpay();
+      const loaded = await loadRazorpay();
+      if (!loaded) { alert('Could not load payment gateway.'); setPaying(false); return; }
       const { data: settings } = await api.get('/settings/public');
       const options = {
         key: settings.razorpay_key_id, amount: order.amount, currency: 'INR',
         name: 'HMC Fee Payment', order_id: order.id, theme: { color: '#0F2B4A' },
-        handler: async (r) => { await api.post('/payments/verify', r); refetch(); },
+        handler: async (r) => { await api.post('/payments/razorpay/verify', r); refetch(); },
         modal: { ondismiss: () => setPaying(false) }
       };
-      new rzp(options).open();
+      new window.Razorpay(options).open();
     } catch { setPaying(false); }
   };
 

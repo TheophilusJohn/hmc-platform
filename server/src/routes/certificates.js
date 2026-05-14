@@ -17,13 +17,13 @@ router.post('/generate/:studentId', authenticate, adminOnly, async (req, res, ne
 
     await prisma.user.update({ where: { id: sp.userId }, data: { status: 'GRADUATED' } });
 
-    const certNumber = `HMC-CERT-${new Date().getFullYear()}-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+    const certificateNumber = `HMC-CERT-${new Date().getFullYear()}-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
 
     const cert = await prisma.degreeCertificate.create({
       data: {
         studentId: req.params.studentId,
-        certNumber,
-        verificationId: uuidv4(),
+        certificateNumber,
+        verificationUuid: uuidv4(),
         graduationDate: req.body.graduationDate ? new Date(req.body.graduationDate) : new Date(),
         programmeName: req.body.programmeName || sp.programme?.name || '',
       },
@@ -32,7 +32,7 @@ router.post('/generate/:studentId', authenticate, adminOnly, async (req, res, ne
     const pdfBuffer = await pdfService.generateDegreeCertificate(req.params.studentId, cert);
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="HMC-Degree-Certificate-${certNumber}.pdf"`,
+      'Content-Disposition': `attachment; filename="HMC-Degree-Certificate-${certificateNumber}.pdf"`,
     });
     res.send(pdfBuffer);
   } catch (err) { next(err); }
@@ -41,7 +41,7 @@ router.post('/generate/:studentId', authenticate, adminOnly, async (req, res, ne
 router.get('/verify/:uuid', async (req, res, next) => {
   try {
     const cert = await prisma.degreeCertificate.findFirst({
-      where: { verificationId: req.params.uuid },
+      where: { verificationUuid: req.params.uuid },
       include: {
         student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } },
       },
@@ -55,7 +55,7 @@ router.get('/verify/:uuid', async (req, res, next) => {
       },
       programme: cert.programmeName,
       graduationDate: cert.graduationDate,
-      certNumber: cert.certNumber,
+      certNumber: cert.certificateNumber,
     });
   } catch (err) { next(err); }
 });

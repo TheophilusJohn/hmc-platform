@@ -25,7 +25,7 @@ export default function StudentLayout() {
   const active = NAV.find(n => n.path === location.pathname || (n.path !== '/student' && location.pathname.startsWith(n.path)))?.id || 'dashboard';
   const displayName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'Student';
 
-  if (location.pathname.startsWith('/student/exam/')) {
+  if (location.pathname.startsWith('/student/exams/') && location.pathname.endsWith('/take')) {
     return <Outlet />;
   }
 

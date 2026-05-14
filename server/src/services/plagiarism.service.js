@@ -1,6 +1,5 @@
 const axios = require('axios');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const notif = require('./notification.service');
 
 /**
@@ -10,7 +9,7 @@ async function compareStudentToStudent(text, examId) {
   if (!text || text.length < 50) return 0;
 
   const otherSubmissions = await prisma.submission.findMany({
-    where: { exam_id: examId, status: { not: 'draft' } },
+    where: { examId, status: { not: 'DRAFT' } },
     select: { answers: true },
   });
 
@@ -41,11 +40,9 @@ async function checkExternalSources(text) {
   if (!email || !apiKey) return { score: 0, sources: [] };
 
   try {
-    // Login to Copyleaks
     const loginRes = await axios.post('https://id.copyleaks.com/v3/account/login/api', { email, key: apiKey });
     const accessToken = loginRes.data.access_token;
 
-    // Submit scan
     const scanId = `hmc-${Date.now()}`;
     await axios.post(`https://api.copyleaks.com/v3/businesses/start/${scanId}`, {
       base64: Buffer.from(text).toString('base64'),
@@ -53,8 +50,7 @@ async function checkExternalSources(text) {
       properties: { webhooks: { status: `${process.env.API_URL}/api/plagiarism/webhook/{STATUS}` } },
     }, { headers: { Authorization: `Bearer ${accessToken}` } });
 
-    // For now return placeholder — webhook would update the record asynchronously
-    return { scan_id: scanId, score: 0, sources: [], status: 'scanning' };
+    return { scanId, score: 0, sources: [], status: 'scanning' };
   } catch (err) {
     console.error('Copyleaks error:', err.message);
     return { score: 0, sources: [], error: err.message };
@@ -68,42 +64,67 @@ async function checkPlagiarism(submissionId, text) {
   try {
     const submission = await prisma.submission.findUnique({
       where: { id: submissionId },
-      include: { exam: { include: { settings: true, subject: true } } },
+      include: {
+        exam: {
+          include: {
+            settings: true,
+            subject: { include: { faculty: { include: { user: { select: { id: true } } } } } },
+          },
+        },
+        student: { include: { user: { select: { id: true } } } },
+      },
     });
-    if (!submission?.exam.settings?.plagiarism_check) return;
+    if (!submission?.exam.settings?.plagiarismCheck) return;
 
-    const threshold = submission.exam.settings.similarity_threshold || 30;
+    const threshold = submission.exam.settings.similarityThreshold || 30;
 
     const [studentScore, externalResult] = await Promise.all([
-      compareStudentToStudent(text, submission.exam_id),
+      compareStudentToStudent(text, submission.examId),
       checkExternalSources(text),
     ]);
 
     const maxScore = Math.max(studentScore, externalResult.score || 0);
 
-    await prisma.plagiarismReport.create({
-      data: {
-        submission_id: submissionId,
-        student_similarity_score: studentScore,
-        external_similarity_score: externalResult.score || 0,
-        matched_sources: externalResult.sources || [],
+    await prisma.plagiarismReport.upsert({
+      where: { submissionId },
+      create: {
+        submissionId,
+        studentSimilarityScore: studentScore,
+        externalSimilarityScore: externalResult.score || 0,
+        matchedSources: externalResult.sources || [],
+      },
+      update: {
+        studentSimilarityScore: studentScore,
+        externalSimilarityScore: externalResult.score || 0,
+        matchedSources: externalResult.sources || [],
       },
     });
 
     if (maxScore > threshold) {
       await prisma.submission.update({
         where: { id: submissionId },
-        data: { plagiarism_score: maxScore, flag_status: 'flagged' },
+        data: { plagiarismScore: maxScore, flagStatus: 'FLAGGED' },
       });
 
-      // Notify faculty
-      const faculty = submission.exam.subject?.faculty_id;
-      if (faculty) {
-        await notif.createNotification(faculty, 'plagiarism_flagged', 'Submission Flagged', `A submission for "${submission.exam.subject?.name}" has been flagged for plagiarism (${Math.round(maxScore)}% similarity).`, `/faculty/exams`);
+      // Notify faculty (Notification.userId FKs to User.id, not FacultyProfile.id)
+      const facultyUserId = submission.exam.subject?.faculty?.user?.id;
+      if (facultyUserId) {
+        await notif.createNotification(
+          facultyUserId, 'plagiarism_flagged', 'Submission Flagged',
+          `A submission for "${submission.exam.subject?.name}" has been flagged for plagiarism (${Math.round(maxScore)}% similarity).`,
+          '/faculty/exams'
+        );
       }
 
-      // Notify student — no score revealed
-      await notif.createNotification(submission.student_id, 'submission_review', 'Submission Under Review', 'Your submission is being reviewed for academic integrity. You will be notified of the outcome.', '/student/exams');
+      // Notify student — no score revealed (use User.id)
+      const studentUserId = submission.student?.user?.id;
+      if (studentUserId) {
+        await notif.createNotification(
+          studentUserId, 'submission_review', 'Submission Under Review',
+          'Your submission is being reviewed for academic integrity. You will be notified of the outcome.',
+          '/student/exams'
+        );
+      }
     }
   } catch (err) {
     console.error('Plagiarism check error:', err);
@@ -115,8 +136,8 @@ async function checkPlagiarism(submissionId, text) {
  */
 async function generatePlagiarismReport(submissionId) {
   const report = await prisma.plagiarismReport.findFirst({
-    where: { submission_id: submissionId },
-    include: { submission: { include: { student: { include: { student_profile: true } }, exam: true } } },
+    where: { submissionId },
+    include: { submission: { include: { student: true, exam: true } } },
   });
   return report;
 }

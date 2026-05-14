@@ -51,6 +51,30 @@ router.get('/:id/batches', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/programmes/batches?status=active — list all batches (across programmes)
+router.get('/batches', authenticate, async (req, res, next) => {
+  try {
+    const where = {};
+    if (req.query.status) where.status = String(req.query.status).toUpperCase();
+    const batches = await prisma.batch.findMany({
+      where,
+      include: {
+        programme: { select: { name: true, durationYears: true } },
+        _count: { select: { students: true } },
+      },
+      orderBy: [{ startYear: 'desc' }, { name: 'asc' }],
+    });
+    res.json({
+      batches: batches.map(b => ({
+        ...b,
+        programmeName: b.programme?.name,
+        durationYears: b.programme?.durationYears,
+        studentCount: b._count?.students || 0,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
 router.post('/:id/batches', authenticate, adminOnly, async (req, res, next) => {
   try {
     const { name, startYear, endYear, currentYear, maxIntake, status } = req.body;

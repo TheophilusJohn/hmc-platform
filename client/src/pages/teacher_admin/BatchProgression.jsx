@@ -5,7 +5,7 @@ import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
 export function BatchProgression() {
-  const { data } = useApi('/batches?status=active');
+  const { data } = useApi('/programmes/batches?status=active');
   const batches = data?.batches || [];
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(null);
@@ -13,7 +13,7 @@ export function BatchProgression() {
   const runProgression = async (batchId) => {
     setRunning(batchId);
     try {
-      const { data } = await api.post(`/batches/${batchId}/progression`);
+      const { data } = await api.post(`/programmes/batches/${batchId}/progression`);
       setResult({ batchId, ...data });
     } catch (e) { alert(e.response?.data?.message); }
     finally { setRunning(null); }

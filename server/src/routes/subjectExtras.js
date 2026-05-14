@@ -28,16 +28,17 @@ router.get('/:id/content', authenticate, async (req, res, next) => {
     if (!await canAccess(req.user, req.params.id)) return res.status(403).json({ error: 'Access denied' });
     const units = await prisma.courseUnit.findMany({
       where: { subjectId: req.params.id },
-      include: { contents: { orderBy: { orderIndex: 'asc' } } },
+      include: { content: { orderBy: { orderIndex: 'asc' } } },
       orderBy: { orderIndex: 'asc' },
     });
     const content = [];
     for (const u of units) {
-      for (const c of u.contents) {
+      for (const c of u.content) {
+        const fileUrl = await minioService.getReadUrl(c.contentUrl);
         content.push({
           id: c.id, unitId: u.id, week: u.orderIndex, unitTitle: u.title,
           title: c.title, type: c.type, description: c.description,
-          fileUrl: c.contentUrl, url: c.contentUrl,
+          fileUrl, url: fileUrl,
           deadline: c.deadline, visible: c.isPublished !== false,
           createdAt: c.createdAt,
         });
@@ -97,7 +98,7 @@ router.get('/:id/gradebook', authenticate, facultyOrAbove, async (req, res, next
     const exams = await prisma.exam.findMany({
       where: { subjectId: req.params.id },
       select: { id: true, title: true, totalMarks: true },
-      orderBy: { startTime: 'asc' },
+      orderBy: { startDatetime: 'asc' },
     });
     const enrollments = await prisma.studentSubjectEnrollment.findMany({
       where: { subjectId: req.params.id },
@@ -126,7 +127,7 @@ router.get('/:id/revaluation-requests', authenticate, facultyOrAbove, async (req
   try {
     if (!await canAccess(req.user, req.params.id)) return res.status(403).json({ error: 'Access denied' });
     const requests = await prisma.revaluation.findMany({
-      where: { subjectId: req.params.id, status: 'PENDING' },
+      where: { subjectId: req.params.id, status: 'pending' },
       include: {
         student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } },
         subject: { select: { name: true, totalMarks: true } },
@@ -270,8 +271,12 @@ router.post('/:id/content', authenticate, facultyOrAbove, upload.single('file'),
     const subjectId = req.params.id;
     let contentUrl = url || null;
     if (req.file) {
-      const filePath = `content/${subjectId}/${Date.now()}-${req.file.originalname}`;
-      contentUrl = await minioService.uploadFile(req.file.buffer, process.env.MINIO_BUCKET || 'hmc-files', filePath, req.file.mimetype);
+      try {
+        const filePath = `content/${subjectId}/${Date.now()}-${req.file.originalname}`;
+        contentUrl = await minioService.uploadFile(req.file.buffer, process.env.MINIO_BUCKET || 'hmc-files', filePath, req.file.mimetype);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
     }
     const weekNum = parseInt(week) || 1;
     let unit = await prisma.courseUnit.findFirst({ where: { subjectId, orderIndex: weekNum } });

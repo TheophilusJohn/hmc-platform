@@ -11,7 +11,7 @@ export default function AdminDashboard() {
   const { data: financeSummary } = useApi('finance-summary', '/reports/financial/summary');
   const { data: atRisk } = useApi('at-risk', '/reports/at-risk');
 
-  const completion = completionData?.percentage || 0;
+  const completion = completionData?.percent || 0;
   const pipelineCounts = Array.isArray(pipeline?.counts) ? pipeline.counts : [];
   const atRiskList = Array.isArray(atRisk) ? atRisk : [];
 
@@ -30,9 +30,9 @@ export default function AdminDashboard() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
         <StatCard icon="🎓" label="Active Students" value="—" color="#0F2B4A" />
         <StatCard icon="📋" label="In Pipeline" value={pipeline?.total ?? '—'} color="#C9920A" />
-        <StatCard icon="₹" label="INR Collected" value={financeSummary ? formatCurrency(financeSummary.collected?.inr) : '—'} color="#166534" />
-        <StatCard icon="💲" label="USD Collected" value={financeSummary ? `$${Number(financeSummary.collected?.usd || 0).toLocaleString()}` : '—'} color="#0F766E" />
-        <StatCard icon="⚠" label="Outstanding INR" value={financeSummary ? formatCurrency(financeSummary.outstanding?.inr) : '—'} color="#991B1B" />
+        <StatCard icon="₹" label="INR Collected" value={financeSummary ? formatCurrency(financeSummary.collectedINR) : '—'} color="#166534" />
+        <StatCard icon="💲" label="USD Collected" value={financeSummary ? `$${Number(financeSummary.collectedUSD || 0).toLocaleString()}` : '—'} color="#0F766E" />
+        <StatCard icon="⚠" label="Outstanding" value={financeSummary ? formatCurrency(financeSummary.outstanding) : '—'} color="#991B1B" />
         <StatCard icon="🚨" label="At-Risk Students" value={atRiskList.length} color="#6D28D9" />
       </div>
 

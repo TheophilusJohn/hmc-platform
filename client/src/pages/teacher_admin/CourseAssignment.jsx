@@ -9,7 +9,7 @@ export default function CourseAssignment() {
   const [facultyId, setFacultyId] = useState('');
 
   const { data: semesters } = useApi('/semesters?status=active,draft');
-  const { data: subjects, refetch } = useApi(semId ? `/semesters/${semId}/subjects` : null, [semId]);
+  const { data: subjects, refetch } = useApi(semId ? `/subjects?semesterId=${semId}` : null, [semId]);
   const { data: faculty } = useApi('/users?role=FACULTY,TEACHER_ADMIN');
 
   const handleAssign = async () => {

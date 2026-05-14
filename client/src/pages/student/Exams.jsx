@@ -33,7 +33,7 @@ export default function StudentExams() {
                 </div>
               )}
               {e.myStatus === 'active' && (
-                <Btn onClick={() => navigate(`/student/exam/${e.id}`)}>Enter Exam →</Btn>
+                <Btn onClick={() => navigate(`/student/exams/${e.id}/take`)}>Enter Exam →</Btn>
               )}
               {e.myStatus === 'completed' && e.revaluationAllowed && (
                 <Btn size="sm" variant="outline">Request Reval.</Btn>

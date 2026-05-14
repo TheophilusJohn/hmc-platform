@@ -98,22 +98,33 @@ router.post('/', authenticate, admissionsAccess, async (req, res, next) => {
     const formData = { ...rest, ...(bodyFormData || {}) };
 
     const year = new Date().getFullYear();
-    const count = await prisma.applicant.count({ where: { intakeYear: year } });
-    const appNo = `HMC-APP-${year}-${String(count + 1001).padStart(4, '0')}`;
-
-    const applicant = await prisma.applicant.create({
-      data: {
-        applicationNo: appNo,
-        programmeId,
-        studentType: String(studentType || 'DOMESTIC').toUpperCase(),
-        pipelineStage: 'RECEIVED',
-        formData,
-        referralCode: referralCode || null,
-        intakeYear: year,
-        status: 'active',
-      },
-      include: { programme: { select: { name: true, code: true } } },
-    });
+    // applicationNo is computed from count; retry on collision to handle concurrent submissions.
+    let applicant;
+    let lastErr;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const count = await prisma.applicant.count({ where: { intakeYear: year } });
+      const appNo = `HMC-APP-${year}-${String(count + 1001 + attempt).padStart(4, '0')}`;
+      try {
+        applicant = await prisma.applicant.create({
+          data: {
+            applicationNo: appNo,
+            programmeId,
+            studentType: String(studentType || 'DOMESTIC').toUpperCase(),
+            pipelineStage: 'RECEIVED',
+            formData,
+            referralCode: referralCode || null,
+            intakeYear: year,
+            status: 'active',
+          },
+          include: { programme: { select: { name: true, code: true } } },
+        });
+        break;
+      } catch (e) {
+        if (e.code === 'P2002') { lastErr = e; continue; }
+        throw e;
+      }
+    }
+    if (!applicant) throw lastErr || new Error('Could not assign application number');
 
     res.status(201).json({ applicant: flatten(applicant) });
   } catch (err) { next(err); }
@@ -224,109 +235,115 @@ router.post('/:id/interview', authenticate, admissionsAccess, async (req, res, n
 // POST /api/admissions/:id/accept
 router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next) => {
   try {
-    const applicant = await prisma.applicant.findUnique({
-      where: { id: req.params.id }, include: { programme: true },
-    });
-    if (!applicant) return res.status(404).json({ error: 'Applicant not found' });
-    if (applicant.convertedToUserId) {
-      return res.status(400).json({ error: 'Applicant already converted to a student account' });
-    }
-
     const settings = await prisma.systemSetting.findUnique({ where: { key: 'admissions' } });
     const deadlineDays = settings?.value?.acceptanceDeadlineDays || 14;
 
     const userIdDisplay = await generateUserId('STUDENT');
-    const tempPassword = Math.random().toString(36).slice(-10) + 'A1!';
+    const tempPassword = require('crypto').randomBytes(8).toString('base64url').slice(0, 10) + 'A1!';
     const tempHash = await bcrypt.hash(tempPassword, 12);
-
-    const fd = applicant.formData || {};
-    const email = fd.email || `${applicant.applicationNo}@student.hmc.college`;
-
-    const newUser = await prisma.user.create({
-      data: {
-        userIdDisplay,
-        role: 'STUDENT',
-        email: String(email).toLowerCase().trim(),
-        status: 'ACTIVE',
-        phone: fd.phone || null,
-        auth: {
-          create: {
-            passwordHash: await bcrypt.hash(uuidv4(), 12),
-            tempPasswordHash: tempHash,
-            tempPasswordExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-          },
-        },
-        studentProfile: {
-          create: {
-            firstName: fd.firstName || '',
-            lastName: fd.lastName || '',
-            dob: fd.dob ? new Date(fd.dob) : new Date('2000-01-01'),
-            gender: fd.gender || 'unspecified',
-            nationality: fd.nationality || 'Indian',
-            studentType: applicant.studentType,
-            studyMode: String(fd.studyMode || 'OFFLINE').toUpperCase(),
-            programmeId: applicant.programmeId,
-            permanentAddress: fd.permanentAddress || null,
-            presentAddress: fd.presentAddress || null,
-          },
-        },
-      },
-    });
-
     const offerExpires = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
-    await prisma.applicant.update({
-      where: { id: req.params.id },
-      data: {
-        pipelineStage: 'ACCEPTED',
-        decision: 'accept',
-        decisionAt: new Date(),
-        offerExpiresAt: offerExpires,
-        convertedToUserId: newUser.id,
-      },
-    });
 
-    // Auto-apply fees matching the new student's study mode
-    try {
+    // Wrap the entire accept flow in a single transaction so:
+    //  - the convertedToUserId check + write is atomic (prevents double-accept race)
+    //  - on any failure, the student account and applicant update both roll back
+    const result = await prisma.$transaction(async (tx) => {
+      const applicant = await tx.applicant.findUnique({
+        where: { id: req.params.id }, include: { programme: true },
+      });
+      if (!applicant) throw Object.assign(new Error('Applicant not found'), { status: 404 });
+      if (applicant.convertedToUserId) {
+        throw Object.assign(new Error('Applicant already converted to a student account'), { status: 400 });
+      }
+
+      const fd = applicant.formData || {};
+      const email = fd.email || `${applicant.applicationNo}@student.hmc.college`;
+
+      const newUser = await tx.user.create({
+        data: {
+          userIdDisplay,
+          role: 'STUDENT',
+          email: String(email).toLowerCase().trim(),
+          status: 'ACTIVE',
+          phone: fd.phone || null,
+          auth: {
+            create: {
+              passwordHash: await bcrypt.hash(uuidv4(), 12),
+              tempPasswordHash: tempHash,
+              tempPasswordExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            },
+          },
+          studentProfile: {
+            create: {
+              firstName: fd.firstName || '',
+              lastName: fd.lastName || '',
+              dob: fd.dob ? new Date(fd.dob) : new Date('2000-01-01'),
+              gender: fd.gender || 'unspecified',
+              nationality: fd.nationality || 'Indian',
+              studentType: applicant.studentType,
+              studyMode: String(fd.studyMode || 'OFFLINE').toUpperCase(),
+              programmeId: applicant.programmeId,
+              permanentAddress: fd.permanentAddress || null,
+              presentAddress: fd.presentAddress || null,
+            },
+          },
+        },
+        include: { studentProfile: true },
+      });
+
+      await tx.applicant.update({
+        where: { id: req.params.id },
+        data: {
+          pipelineStage: 'ACCEPTED',
+          decision: 'accept',
+          decisionAt: new Date(),
+          offerExpiresAt: offerExpires,
+          convertedToUserId: newUser.id,
+        },
+      });
+
+      // Auto-apply fees inside the transaction
       const studyMode = String(fd.studyMode || 'OFFLINE').toUpperCase();
       const applicableRules = ['ALL'];
       if (studyMode === 'OFFLINE') applicableRules.push('OFFLINE_ONLY');
       if (studyMode === 'ONLINE') applicableRules.push('ONLINE_ONLY');
-      const autoFees = await prisma.feeType.findMany({
+      const autoFees = await tx.feeType.findMany({
         where: { isActive: true, autoApply: { in: applicableRules } },
       });
       const isIntl = applicant.studentType === 'INTERNATIONAL';
-      const sp = await prisma.studentProfile.findUnique({ where: { userId: newUser.id } });
-      if (sp) {
+      if (newUser.studentProfile) {
         for (const ft of autoFees) {
-          try {
-            const amount = isIntl ? Number(ft.internationalAmount || ft.domesticAmount) : Number(ft.domesticAmount);
-            await prisma.studentFeeLedger.create({
-              data: {
-                studentId: sp.id, feeTypeId: ft.id,
-                amount, balance: amount, waivedAmount: 0,
-                currency: isIntl ? 'USD' : 'INR',
-                status: 'UNPAID',
-                description: ft.name,
-                addedById: req.user.id,
-              },
-            });
-          } catch (e) { console.warn('Auto-fee skip:', ft.name, e.message); }
+          const amount = isIntl ? Number(ft.internationalAmount || ft.domesticAmount) : Number(ft.domesticAmount);
+          await tx.studentFeeLedger.create({
+            data: {
+              studentId: newUser.studentProfile.id,
+              feeTypeId: ft.id,
+              amount, balance: amount, waivedAmount: 0,
+              currency: isIntl ? 'USD' : 'INR',
+              status: 'UNPAID',
+              description: ft.name,
+              addedById: req.user.id,
+            },
+          });
         }
       }
-    } catch (e) { console.warn('Auto-fee application failed:', e.message); }
 
+      return { applicant, newUser };
+    });
+
+    // Side effects outside the transaction
     try {
       const { sendAcceptanceLetter } = require('../services/email.service');
-      await sendAcceptanceLetter(applicant, newUser, tempPassword, offerExpires);
+      await sendAcceptanceLetter(result.applicant, result.newUser, tempPassword, offerExpires);
     } catch (_e) {}
 
     res.json({
       message: 'Applicant accepted. Student account created.',
-      userId: newUser.id,
+      userId: result.newUser.id,
       userIdDisplay,
       tempPassword,
     });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     if (err.code === 'P2002') return res.status(400).json({ error: 'Email already in use by another account' });
     next(err);
   }

@@ -38,9 +38,25 @@ router.get('/', authenticate, adminOnly, async (req, res, next) => {
 // POST /api/users
 router.post('/', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const { role, email, phone, firstName, lastName, ...profileData } = req.body;
+    const { role, email, phone, firstName, lastName } = req.body;
+    const ALLOWED_ROLES = ['FULL_ADMIN', 'TEACHER_ADMIN', 'FACULTY', 'ADMISSIONS_OFFICER', 'STUDENT'];
+    if (!ALLOWED_ROLES.includes(role)) {
+      return res.status(400).json({ error: `Invalid role: ${role}` });
+    }
+    if (!email || !firstName || !lastName) {
+      return res.status(400).json({ error: 'firstName, lastName and email are required' });
+    }
+
+    // Allowlist profile fields rather than spreading req.body into Prisma.
+    const STUDENT_FIELDS = ['dob', 'gender', 'nationality', 'studentType', 'studyMode', 'batchId', 'programmeId', 'permanentAddress', 'presentAddress'];
+    const FACULTY_FIELDS = ['designation', 'qualification', 'specialization'];
+    const studentData = {};
+    const facultyData = {};
+    for (const k of STUDENT_FIELDS) if (req.body[k] !== undefined) studentData[k] = req.body[k];
+    for (const k of FACULTY_FIELDS) if (req.body[k] !== undefined) facultyData[k] = req.body[k];
+
     const userIdDisplay = await generateUserId(role);
-    const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
+    const tempPassword = require('crypto').randomBytes(8).toString('base64url').slice(0, 8) + 'A1!';
     const tempHash = await bcrypt.hash(tempPassword, 12);
 
     const user = await prisma.user.create({
@@ -58,10 +74,21 @@ router.post('/', authenticate, adminOnly, async (req, res, next) => {
           }
         },
         ...(role === 'STUDENT' && {
-          studentProfile: { create: { firstName, lastName, ...profileData, dob: new Date(profileData.dob || '2000-01-01'), gender: profileData.gender || 'Not specified', nationality: profileData.nationality || 'Indian', studyMode: profileData.studyMode || 'OFFLINE', studentType: profileData.studentType || 'DOMESTIC' } }
+          studentProfile: {
+            create: {
+              firstName,
+              lastName,
+              ...studentData,
+              dob: new Date(studentData.dob || '2000-01-01'),
+              gender: studentData.gender || 'Not specified',
+              nationality: studentData.nationality || 'Indian',
+              studyMode: String(studentData.studyMode || 'OFFLINE').toUpperCase(),
+              studentType: String(studentData.studentType || 'DOMESTIC').toUpperCase(),
+            },
+          },
         }),
         ...((['FACULTY', 'TEACHER_ADMIN'].includes(role)) && {
-          facultyProfile: { create: { firstName, lastName, designation: profileData.designation } }
+          facultyProfile: { create: { firstName, lastName, ...facultyData } },
         }),
       }
     });
@@ -181,7 +208,7 @@ router.delete('/:id', authenticate, adminOnly, async (req, res, next) => {
     // Block if faculty has active subjects
     const faculty = await prisma.facultyProfile.findFirst({ where: { userId: req.params.id } });
     if (faculty) {
-      const activeSubjects = await prisma.subject.count({ where: { facultyId: faculty.id, status: 'ACTIVE' } });
+      const activeSubjects = await prisma.subject.count({ where: { facultyId: faculty.id, status: 'active' } });
       if (activeSubjects > 0) {
         return res.status(400).json({ error: 'Cannot deactivate faculty with active subjects. Reassign subjects first.' });
       }
