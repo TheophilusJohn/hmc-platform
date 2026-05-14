@@ -63,9 +63,10 @@ router.post('/', authenticate, adminOnly, async (req, res, next) => {
     }
     const userIdDisplay = `${prefix}${String(nextNum).padStart(padLen, '0')}`;
 
-    const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
-    const realPasswordHash = await bcrypt.hash(Math.random().toString(36).slice(-20) + 'Xx!1', 10);
-    const tempPasswordHash = await bcrypt.hash(tempPassword, 10);
+    const crypto = require('crypto');
+    const tempPassword = crypto.randomBytes(8).toString('base64url').slice(0, 8) + 'A1!';
+    const realPasswordHash = await bcrypt.hash(crypto.randomBytes(16).toString('base64url'), 12);
+    const tempPasswordHash = await bcrypt.hash(tempPassword, 12);
     const tempPasswordExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     const data = {

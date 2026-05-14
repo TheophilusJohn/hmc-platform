@@ -103,9 +103,14 @@ router.post('/', authenticate, adminOnly, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/users/:id
+// GET /api/users/:id — admins, TA, or the user themselves
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
+    const role = req.user.role;
+    const isStaff = ['FULL_ADMIN', 'TEACHER_ADMIN'].includes(role);
+    if (!isStaff && req.params.id !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const user = await prisma.user.findUnique({
       where: { id: req.params.id },
       include: { studentProfile: { include: { programme: true, batch: true } }, facultyProfile: true }
@@ -225,7 +230,8 @@ router.delete('/:id', authenticate, adminOnly, async (req, res, next) => {
 // POST /api/users/:id/reset-password
 router.post('/:id/reset-password', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
+    const crypto = require('crypto');
+    const tempPassword = crypto.randomBytes(8).toString('base64url').slice(0, 8) + 'A1!';
     const tempHash = await bcrypt.hash(tempPassword, 12);
 
     await prisma.userAuth.update({
@@ -235,6 +241,9 @@ router.post('/:id/reset-password', authenticate, adminOnly, async (req, res, nex
         tempPasswordExpires: new Date(Date.now() + 48 * 60 * 60 * 1000),
       }
     });
+
+    // Invalidate any active sessions so the old password (or stolen tokens) can't be used.
+    await prisma.session.deleteMany({ where: { userId: req.params.id } });
 
     const user = await prisma.user.findUnique({ where: { id: req.params.id } });
     try {
@@ -268,8 +277,8 @@ router.post('/:id/set-password', authenticate, adminOnly, async (req, res, next)
       return res.status(400).json({ error: 'Use the Change Password page to change your own password.' });
     }
     const { password } = req.body;
-    if (!password || String(password).length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
     const passwordHash = await bcrypt.hash(String(password), 12);
     await prisma.userAuth.update({
@@ -281,6 +290,8 @@ router.post('/:id/set-password', authenticate, adminOnly, async (req, res, next)
         failedAttempts: 0,
       },
     });
+    // Invalidate existing sessions so the user is forced to log in with the new password.
+    await prisma.session.deleteMany({ where: { userId: req.params.id } });
     res.json({ message: 'Password set successfully. User can now log in with this password.' });
   } catch (err) { console.error('set-password:', err); next(err); }
 });

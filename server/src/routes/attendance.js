@@ -17,6 +17,9 @@ function rejectFutureDate(dateInput) {
 
 router.get('/subjects/:id/attendance', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
+    if (!(await canAccessSubject(req.user, req.params.id))) {
+      return res.status(403).json({ error: 'You do not teach this subject' });
+    }
     const { date, studentId } = req.query;
     const where = { subjectId: req.params.id };
     if (date) where.date = new Date(date);

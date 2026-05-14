@@ -30,21 +30,7 @@ function verifyRazorpaySignature(orderId, paymentId, signature) {
   return crypto.timingSafeEqual(sigBuf, expBuf);
 }
 
-async function getNextReceiptNumber(tx = prisma) {
-  const year = new Date().getFullYear();
-  const prefix = `RCP-${year}-`;
-  const last = await tx.payment.findFirst({
-    where: { receiptNo: { startsWith: prefix } },
-    orderBy: { receiptNo: 'desc' },
-    select: { receiptNo: true },
-  });
+// getNextReceiptNumber lives in routes/payments.js (with retry-on-collision)
+// to keep receipt minting next to the payment-creation transaction.
 
-  let seq = 1;
-  if (last?.receiptNo) {
-    const parts = last.receiptNo.split('-');
-    seq = parseInt(parts[parts.length - 1], 10) + 1;
-  }
-  return `${prefix}${String(seq).padStart(4, '0')}`;
-}
-
-module.exports = { createRazorpayOrder, verifyRazorpaySignature, getNextReceiptNumber };
+module.exports = { createRazorpayOrder, verifyRazorpaySignature };

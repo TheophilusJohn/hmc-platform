@@ -23,6 +23,9 @@ router.post('/unofficial/:studentId', authenticate, async (req, res, next) => {
     if (req.user.role === 'STUDENT') {
       const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id } });
       if (!sp || sp.id !== req.params.studentId) return res.status(403).json({ error: 'Forbidden' });
+    } else if (!['FULL_ADMIN', 'TEACHER_ADMIN'].includes(req.user.role)) {
+      // FACULTY / ADMISSIONS_OFFICER can't pull arbitrary students' transcripts.
+      return res.status(403).json({ error: 'Forbidden' });
     }
     const pdfBuffer = await pdfService.generateUnofficialTranscript(req.params.studentId);
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="HMC-Unofficial-Transcript.pdf"' });

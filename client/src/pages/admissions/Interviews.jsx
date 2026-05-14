@@ -57,74 +57,8 @@ export function Interviews() {
   );
 }
 
-// References.jsx
-export function References() {
-  const { data, refetch } = useApi('/references/pending');
-  const refs = data?.references || [];
+// References and FeeRecording live in dedicated files
+// (admissions/References.jsx and admissions/FeeRecording.jsx). The duplicates
+// that previously lived here were never mounted and have been removed.
 
-  const handleResend = async (id) => {
-    await api.post(`/references/${id}/resend`);
-    refetch();
-    alert('Reference link resent.');
-  };
-
-  const cols = [
-    { key: 'applicantName', label: 'Applicant', render: v => <strong style={{fontSize:13}}>{v}</strong> },
-    { key: 'refereeName', label: 'Referee', render: (v,r) => <div><div style={{fontWeight:500}}>{v}</div><div style={{fontSize:12,color:'#7B8494'}}>{r.refereeEmail}</div></div> },
-    { key: 'refType', label: 'Type', render: v => <Badge color={v==='pastoral'?'green':'teal'}>{v.replace(/_/g,' ')}</Badge> },
-    { key: 'status', label: 'Status', render: v => <Badge color={v==='received'?'green':v==='expired'?'red':'amber'}>{v}</Badge> },
-    { key: 'tokenExpiresAt', label: 'Expires', render: v => v ? new Date(v).toLocaleDateString('en-IN') : '—' },
-    { key: 'id', label: '', render: (id,r) => r.status !== 'received' && <Btn size="sm" variant="outline" onClick={() => handleResend(id)}>Resend</Btn> },
-  ];
-
-  return (
-    <PageWrapper title="References" subtitle="Track and manage referee submissions">
-      <div style={{padding:'10px 14px',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:8,marginBottom:16,fontSize:13,color:'#92400E'}}>
-        Both references must be received before an applicant can advance past Docs Review.
-      </div>
-      <Card><Table columns={cols} rows={refs} /></Card>
-    </PageWrapper>
-  );
-}
-
-// FeeRecording.jsx
-export function FeeRecording() {
-  const [form, setForm] = useState({ studentId: '', amount: '', mode: 'cash', notes: '' });
-  const { data: students } = useApi('/users?role=STUDENT&status=active');
-
-  const handleRecord = async () => {
-    await api.post('/payments/offline', form);
-    setForm({ studentId: '', amount: '', mode: 'cash', notes: '' });
-    alert('Payment recorded. Receipt generated.');
-  };
-
-  return (
-    <PageWrapper title="Record Fee Payment" subtitle="Record offline payments at enrollment">
-      <Card style={{maxWidth:480}}>
-        <div style={{display:'grid',gap:14}}>
-          <div>
-            <label style={{fontSize:13,fontWeight:500,color:'#3D4450',display:'block',marginBottom:6}}>Student</label>
-            <select value={form.studentId} onChange={e => setForm(f=>({...f,studentId:e.target.value}))}
-              style={{padding:'10px 12px',border:'1px solid #DDE1E7',borderRadius:8,fontSize:14,width:'100%',background:'#fff'}}>
-              <option value="">Select student...</option>
-              {(students?.users||[]).filter(u => u.studentProfileId).map(u => <option key={u.id} value={u.studentProfileId}>{u.firstName} {u.lastName} ({u.userIdDisplay})</option>)}
-            </select>
-          </div>
-          <Input label="Amount (₹)" type="number" value={form.amount} onChange={e => setForm(f=>({...f,amount:e.target.value}))} />
-          <div>
-            <label style={{fontSize:13,fontWeight:500,color:'#3D4450',display:'block',marginBottom:6}}>Payment Mode</label>
-            <select value={form.mode} onChange={e => setForm(f=>({...f,mode:e.target.value}))}
-              style={{padding:'10px 12px',border:'1px solid #DDE1E7',borderRadius:8,fontSize:14,width:'100%',background:'#fff'}}>
-              {[{value:'cash',label:'Cash'},{value:'bank_transfer',label:'Bank Transfer'},{value:'upi',label:'UPI'}].map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-          <Input label="Notes" value={form.notes} onChange={e => setForm(f=>({...f,notes:e.target.value}))} />
-        </div>
-        <Btn style={{marginTop:20}} onClick={handleRecord}>Record Payment & Generate Receipt</Btn>
-      </Card>
-    </PageWrapper>
-  );
-}
-
-// Default exports for routing
-export { Interviews as default };
+export default Interviews;

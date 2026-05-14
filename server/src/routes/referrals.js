@@ -104,7 +104,7 @@ router.get('/', authenticate, adminOnly, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/trigger/:applicantId', authenticate, async (req, res, next) => {
+router.post('/trigger/:applicantId', authenticate, require('../middleware/rbac').requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER'), async (req, res, next) => {
   try {
     const applicant = await prisma.applicant.findUnique({ where: { id: req.params.applicantId } });
     if (!applicant?.referralCode) return res.json({ triggered: false, reason: 'No referral code' });

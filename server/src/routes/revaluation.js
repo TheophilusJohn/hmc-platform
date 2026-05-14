@@ -8,9 +8,19 @@ const notif = require('../services/notification.service');
 
 router.post('/request', authenticate, requireRole('STUDENT'), async (req, res, next) => {
   try {
-    const { subjectId, semesterId, reason, originalMarks } = req.body;
+    const { subjectId, semesterId, reason } = req.body;
     const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id } });
     if (!sp) return res.status(404).json({ error: 'Student profile not found' });
+
+    // Derive originalMarks server-side from the student's enrollment — never trust the client value.
+    const enrollment = await prisma.studentSubjectEnrollment.findFirst({
+      where: { studentId: sp.id, subjectId, semesterId },
+      select: { iaMarks: true, eseMarks: true },
+    });
+    if (!enrollment) {
+      return res.status(400).json({ error: 'No graded enrollment found for this subject/semester' });
+    }
+    const originalMarks = (enrollment.iaMarks ?? 0) + (enrollment.eseMarks ?? 0);
 
     const feeSetting = await prisma.systemSetting.findUnique({ where: { key: 'revaluation_fee' } });
     const feeAmount = feeSetting?.value?.amount || 0;

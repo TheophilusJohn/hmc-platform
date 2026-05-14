@@ -90,13 +90,13 @@ export function StatCard({ icon, label, value, sub, color = '#0F2B4A', trend }) 
 }
 
 // Input.jsx
-export function Input({ label, placeholder, type = 'text', icon, error, helper, value, onChange, name, required, disabled, style = {} }) {
+export function Input({ label, placeholder, type = 'text', icon, error, helper, value, onChange, name, required, disabled, min, max, maxLength, style = {} }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, ...style }}>
       {label && <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', fontFamily: 'DM Sans,sans-serif' }}>{label}{required && <span style={{ color: '#991B1B' }}> *</span>}</label>}
       <div style={{ position: 'relative' }}>
         {icon && <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#7B8494', pointerEvents: 'none' }}>{icon}</span>}
-        <input type={type} placeholder={placeholder} name={name} value={value} onChange={onChange} required={required} disabled={disabled}
+        <input type={type} placeholder={placeholder} name={name} value={value} onChange={onChange} required={required} disabled={disabled} min={min} max={max} maxLength={maxLength}
           style={{ width: '100%', padding: icon ? '8px 12px 8px 34px' : '8px 12px', fontSize: 14, fontFamily: 'DM Sans,sans-serif', border: `1px solid ${error ? '#FECACA' : '#DDE1E7'}`, borderRadius: 8, background: disabled ? '#F8F9FA' : '#fff', color: '#1A1D23', outline: 'none', boxSizing: 'border-box' }} />
       </div>
       {error && <span style={{ fontSize: 12, color: '#991B1B' }}>{error}</span>}

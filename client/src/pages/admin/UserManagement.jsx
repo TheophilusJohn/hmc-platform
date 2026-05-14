@@ -21,7 +21,7 @@ export default function UserManagement() {
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', role: 'STUDENT', programmeId: '', studyMode: 'OFFLINE', studentType: 'DOMESTIC' });
 
   const roleFilter = tab === 'all' ? '' : tab === 'students' ? 'STUDENT' : tab === 'faculty' ? 'FACULTY' : 'FULL_ADMIN,TEACHER_ADMIN,ADMISSIONS_OFFICER';
-  const { data, loading, refetch } = useApi(`/users?search=${search}&role=${roleFilter}`, [search, tab]);
+  const { data, isLoading, refetch } = useApi(`/users?search=${search}&role=${roleFilter}`, [search, tab]);
   const { data: progData } = useApi('/programmes');
 
   const users = data?.users || [];
@@ -62,7 +62,7 @@ export default function UserManagement() {
   };
 
   const handleSetPassword = async () => {
-    if (!newPw || newPw.length < 6) { alert('Password must be at least 6 characters.'); return; }
+    if (!newPw || newPw.length < 8) { alert('Password must be at least 8 characters.'); return; }
     if (newPw !== confirmPw) { alert('Passwords do not match.'); return; }
     if (!window.confirm(`Set password for ${viewUser.userIdDisplay}? They will be able to log in with this password immediately.`)) return;
     try {
@@ -135,7 +135,7 @@ export default function UserManagement() {
           <SearchInput value={search} onChange={setSearch} placeholder="Search name, ID, email..." />
           <Btn onClick={() => setAddOpen(true)}>+ Add User</Btn>
         </div>
-        <Table columns={cols} rows={users} loading={loading} onRowClick={r => setViewUser(r)} />
+        <Table columns={cols} rows={users} loading={isLoading} onRowClick={r => setViewUser(r)} />
       </Card>
 
       {addOpen && (
@@ -227,7 +227,7 @@ export default function UserManagement() {
             ⚠ This will set the user's actual password. They will be able to log in with it immediately. Share securely.
           </div>
           <div style={{ display: 'grid', gap: 12 }}>
-            <Input label="New Password" type={showPw ? 'text' : 'password'} value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="At least 6 characters" />
+            <Input label="New Password" type={showPw ? 'text' : 'password'} value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="At least 8 characters" />
             <Input label="Confirm Password" type={showPw ? 'text' : 'password'} value={confirmPw} onChange={e => setConfirmPw(e.target.value)} />
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: '#5A6272' }}>
               <input type="checkbox" checked={showPw} onChange={e => setShowPw(e.target.checked)} />

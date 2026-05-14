@@ -26,6 +26,10 @@ export default function Semesters() {
       alert('Please fill name, batch, start date, and end date.');
       return;
     }
+    if (new Date(form.endDate) <= new Date(form.startDate)) {
+      alert('End date must be after start date.');
+      return;
+    }
     try {
       await api.post('/semesters', form);
       setOpen(false); setForm(EMPTY); refetch();

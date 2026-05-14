@@ -7,7 +7,7 @@ const getVal = (v) => (v && typeof v === 'object' && 'target' in v) ? v.target.v
 const EMPTY = {
   name: '', code: '', creditHours: 3,
   semesterId: '', batchId: '', facultyId: '',
-  eseMarks: 70, iaMarks: 30, passmark: 40,
+  eseMarks: 70, iaMarks: 30, passMark: 40,
   examMode: 'OFFLINE', type: 'CORE',
 };
 
@@ -60,7 +60,7 @@ export default function Subjects() {
       facultyId: row.facultyId || row.faculty?.id || '',
       eseMarks: row.eseMarks || 70,
       iaMarks: row.iaMarks || 30,
-      passmark: row.passMark || row.passmark || 40,
+      passMark: row.passMark || 40,
       examMode: row.examMode || 'OFFLINE',
       type: row.type || 'CORE',
     });
@@ -126,7 +126,7 @@ export default function Subjects() {
       <Input label="Credit Hours" type="number" value={f.creditHours} onChange={setField('creditHours', setter)} />
       <Input label="ESE Marks" type="number" value={f.eseMarks} onChange={setField('eseMarks', setter)} />
       <Input label="IA Marks" type="number" value={f.iaMarks} onChange={setField('iaMarks', setter)} />
-      <Input label="Pass Mark" type="number" value={f.passmark} onChange={setField('passmark', setter)} />
+      <Input label="Pass Mark" type="number" value={f.passMark} onChange={setField('passMark', setter)} />
       <Select label="Exam Mode" value={f.examMode} onChange={setField('examMode', setter)}
         options={[{ value: 'OFFLINE', label: 'Offline' }, { value: 'ONLINE', label: 'Online' }]} />
       <Select label="Type" value={f.type} onChange={setField('type', setter)}

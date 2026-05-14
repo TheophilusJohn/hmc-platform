@@ -1,7 +1,6 @@
-import { PageWrapper, Card, StatCard, Badge, Btn, Table, Tabs } from '../../components/common';
+import { PageWrapper, Card, StatCard, Btn } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import { Link } from 'react-router-dom';
-import { BarChart, PieChart } from '../../components/charts';
 
 // AdmissionsView.jsx
 export function AdmissionsView() {

@@ -102,7 +102,8 @@ app.set('trust proxy', 1);
   // Public routes (no auth required)
   app.use('/api/auth', authRoutes);
   app.use('/api/references', referenceRoutes); // referee submission is public
-  app.get('/api/transcripts/verify/:uuid', transcriptRoutes); // public verification
+  // GET /api/transcripts/verify/:uuid is reachable through the main /api/transcripts mount below.
+  // Auth on that route is implicit (no `authenticate` middleware on the route handler itself).
 
   // Protected routes
   app.use('/api/users', userExtraRoutes);

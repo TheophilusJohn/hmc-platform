@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { PageWrapper, Card, Btn, Select, Badge, Table } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
-import { BarChart, PieChart } from '../../components/charts';
+import { BarChart } from '../../components/charts';
 import api from '../../utils/api';
 
 const REPORT_TYPES = [

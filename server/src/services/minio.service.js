@@ -11,12 +11,16 @@ const Minio = require('minio');
 // and remove the `setBucketPolicy` call below.
 // ──────────────────────────────────────────────────────────────────────────────
 
+if (!process.env.MINIO_ACCESS_KEY || !process.env.MINIO_SECRET_KEY) {
+  throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set — refusing to use minioadmin defaults');
+}
+
 const client = new Minio.Client({
   endPoint: process.env.MINIO_ENDPOINT || 'localhost',
   port: parseInt(process.env.MINIO_PORT || '9000'),
   useSSL: process.env.MINIO_USE_SSL === 'true',
-  accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-  secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
+  accessKey: process.env.MINIO_ACCESS_KEY,
+  secretKey: process.env.MINIO_SECRET_KEY,
 });
 
 const DEFAULT_BUCKET = process.env.MINIO_BUCKET || 'hmc-files';

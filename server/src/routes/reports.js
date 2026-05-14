@@ -110,10 +110,10 @@ router.get('/financial/summary', authenticate, adminOnly, async (req, res, next)
       where: { status: 'confirmed', ...(Object.keys(dateFilter).length ? { paidAt: dateFilter } : {}) },
     });
 
-    const inr = payments.filter(p => p.currency === 'INR');
-    const usd = payments.filter(p => p.currency === 'USD');
-    const totalINR = inr.reduce((sum, p) => sum + Number(p.amount), 0);
-    const totalUSD = usd.reduce((sum, p) => sum + Number(p.amount), 0);
+    // Treat missing/unrecognized currency as INR (schema default) rather than silently dropping the row.
+    const isUSD = p => p.currency === 'USD';
+    const totalUSD = payments.filter(isUSD).reduce((sum, p) => sum + Number(p.amount), 0);
+    const totalINR = payments.filter(p => !isUSD(p)).reduce((sum, p) => sum + Number(p.amount), 0);
 
     const outstandingINR = await prisma.studentFeeLedger.aggregate({
       _sum: { balance: true },

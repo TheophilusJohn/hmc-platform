@@ -97,6 +97,13 @@ router.post('/', authenticate, admissionsAccess, async (req, res, next) => {
 
     const formData = { ...rest, ...(bodyFormData || {}) };
 
+    // Cap formData JSON size to prevent malicious 10MB+ submissions from being persisted.
+    const FORM_DATA_MAX_BYTES = 64 * 1024;
+    const formSize = Buffer.byteLength(JSON.stringify(formData), 'utf8');
+    if (formSize > FORM_DATA_MAX_BYTES) {
+      return res.status(413).json({ error: `Application form exceeds ${FORM_DATA_MAX_BYTES} byte limit` });
+    }
+
     const year = new Date().getFullYear();
     // applicationNo is computed from count; retry on collision to handle concurrent submissions.
     let applicant;

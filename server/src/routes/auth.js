@@ -145,6 +145,11 @@ router.post('/change-password', authenticate, async (req, res, next) => {
       },
     });
 
+    // Invalidate sessions on other devices; the current session will be replaced by the new token below.
+    await prisma.session.deleteMany({
+      where: { userId: req.user.id, ...(req.sessionId && { NOT: { id: req.sessionId } }) },
+    });
+
     // Issue fresh token without the mustChangePassword flag
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     const newToken = generateToken(user, false);
@@ -225,6 +230,9 @@ router.post('/reset-password/:token', async (req, res, next) => {
         tempPasswordExpires: null,
       }
     });
+
+    // Invalidate all existing sessions for this user — any stolen token must be re-authenticated.
+    await prisma.session.deleteMany({ where: { userId: auth.userId } });
 
     res.json({ message: 'Password reset successfully. You can now log in.' });
   } catch (err) {

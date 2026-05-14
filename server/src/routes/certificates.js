@@ -17,7 +17,8 @@ router.post('/generate/:studentId', authenticate, adminOnly, async (req, res, ne
 
     await prisma.user.update({ where: { id: sp.userId }, data: { status: 'GRADUATED' } });
 
-    const certificateNumber = `HMC-CERT-${new Date().getFullYear()}-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+    const crypto = require('crypto');
+    const certificateNumber = `HMC-CERT-${new Date().getFullYear()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
     const cert = await prisma.degreeCertificate.create({
       data: {

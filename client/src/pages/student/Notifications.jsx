@@ -15,7 +15,7 @@ export default function Notifications() {
   };
 
   const markAllRead = async () => {
-    await api.post('/notifications/mark-all-read');
+    await api.put('/notifications/read-all');
     refetch();
   };
 

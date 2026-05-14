@@ -11,7 +11,8 @@ router.get('/my-balance', authenticate, async (req, res, next) => {
       where: { studentId: sp.id },
       select: { balance: true },
     });
-    const outstanding = entries.reduce((sum, e) => sum + Math.max(0, Number(e.balance || 0)), 0);
+    // Sum naturally — negative balances (referral credits stored as WAIVED rows) should reduce the outstanding total, not be silently zeroed.
+    const outstanding = entries.reduce((sum, e) => sum + Number(e.balance || 0), 0);
     const overdue = await prisma.installmentPlan.findFirst({
       where: { studentId: sp.id, status: 'OVERDUE' }, select: { id: true },
     });

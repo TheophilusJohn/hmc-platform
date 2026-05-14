@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { adminOrTA } = require('../middleware/rbac');
 const emailService = require('../services/email.service');
 
 function personalise(template, data) {
@@ -31,9 +32,18 @@ router.get('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/', authenticate, async (req, res, next) => {
+const MESSAGE_SUBJECT_MAX = 200;
+const MESSAGE_BODY_MAX = 20 * 1024;
+
+router.post('/', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { type, subject, body, channels, recipientScope, templateId } = req.body;
+    if (subject && String(subject).length > MESSAGE_SUBJECT_MAX) {
+      return res.status(400).json({ error: `Subject exceeds ${MESSAGE_SUBJECT_MAX} character limit` });
+    }
+    if (body && String(body).length > MESSAGE_BODY_MAX) {
+      return res.status(400).json({ error: `Body exceeds ${MESSAGE_BODY_MAX} character limit` });
+    }
     const settings = await prisma.systemSetting.findMany({ where: { key: { in: ['sendgrid', 'communication_phone'] } } });
     const settingsMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
 
@@ -104,7 +114,7 @@ router.post('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/preview-recipients', authenticate, async (req, res, next) => {
+router.post('/preview-recipients', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { recipientScope } = req.body;
     let recipients = [];
@@ -154,7 +164,7 @@ router.get('/templates', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/templates', authenticate, async (req, res, next) => {
+router.post('/templates', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const t = await prisma.messageTemplate.create({ data: { ...req.body, createdById: req.user.id } });
     res.status(201).json(t);

@@ -7,7 +7,16 @@ import './index.css';
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, staleTime: 30000, refetchOnWindowFocus: false },
+    queries: {
+      // Retry once on 5xx, never on 4xx — a 400/401/404 shouldn't be hammered.
+      retry: (failureCount, err) => {
+        const status = err?.response?.status;
+        if (status && status >= 400 && status < 500) return false;
+        return failureCount < 1;
+      },
+      staleTime: 30000,
+      refetchOnWindowFocus: false,
+    },
     mutations: { retry: 0 },
   },
 });

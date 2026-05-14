@@ -28,6 +28,10 @@ router.get('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const EXAM_TYPES = ['ESE', 'IA'];
+const EXAM_MODES = ['ONLINE', 'OFFLINE'];
+const ANSWER_FORMATS = ['MCQ', 'WRITTEN', 'FILE_UPLOAD', 'MIXED'];
+
 router.post('/', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const { settings, ...examData } = req.body;
@@ -35,24 +39,57 @@ router.post('/', authenticate, facultyOrAbove, async (req, res, next) => {
     if (!(await canAccessSubject(req.user, examData.subjectId))) {
       return res.status(403).json({ error: 'You do not teach this subject' });
     }
+
+    // Enum validation
+    const type = examData.type ? String(examData.type).toUpperCase() : null;
+    const mode = examData.mode ? String(examData.mode).toUpperCase() : null;
+    const answerFormat = examData.answerFormat ? String(examData.answerFormat).toUpperCase() : null;
+    if (type && !EXAM_TYPES.includes(type)) {
+      return res.status(400).json({ error: `type must be one of: ${EXAM_TYPES.join(', ')}` });
+    }
+    if (mode && !EXAM_MODES.includes(mode)) {
+      return res.status(400).json({ error: `mode must be one of: ${EXAM_MODES.join(', ')}` });
+    }
+    if (answerFormat && !ANSWER_FORMATS.includes(answerFormat)) {
+      return res.status(400).json({ error: `answerFormat must be one of: ${ANSWER_FORMATS.join(', ')}` });
+    }
+
+    // passMark ≤ totalMarks
+    const totalMarks = examData.totalMarks !== undefined ? parseInt(examData.totalMarks, 10) : null;
+    const passMark = examData.passMark !== undefined ? parseInt(examData.passMark, 10) : null;
+    if (totalMarks !== null && passMark !== null && passMark > totalMarks) {
+      return res.status(400).json({ error: 'passMark cannot exceed totalMarks' });
+    }
+
+    // startDatetime < endDatetime
+    if (examData.startDatetime && examData.endDatetime) {
+      const start = new Date(examData.startDatetime);
+      const end = new Date(examData.endDatetime);
+      if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end <= start) {
+        return res.status(400).json({ error: 'endDatetime must be after startDatetime' });
+      }
+    }
+
     // Marks consistency: exam totalMarks shouldn't exceed the subject component for its type
-    if (examData.type && examData.totalMarks !== undefined) {
+    if (type && totalMarks !== null) {
       const subj = await prisma.subject.findUnique({
         where: { id: examData.subjectId },
         select: { eseMarks: true, iaMarks: true },
       });
-      const total = parseInt(examData.totalMarks);
-      const t = String(examData.type).toUpperCase();
-      if (subj && t === 'ESE' && total > subj.eseMarks) {
+      if (subj && type === 'ESE' && totalMarks > subj.eseMarks) {
         return res.status(400).json({ error: `ESE exam total marks cannot exceed subject's ESE marks (${subj.eseMarks})` });
       }
-      if (subj && t === 'IA' && total > subj.iaMarks) {
+      if (subj && type === 'IA' && totalMarks > subj.iaMarks) {
         return res.status(400).json({ error: `IA exam total marks cannot exceed subject's IA marks (${subj.iaMarks})` });
       }
     }
+
     const exam = await prisma.exam.create({
       data: {
         ...examData,
+        ...(type && { type }),
+        ...(mode && { mode }),
+        ...(answerFormat && { answerFormat }),
         ...(settings && { settings: { create: settings } }),
       },
       include: { settings: true },

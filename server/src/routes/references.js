@@ -4,16 +4,19 @@ const router = express.Router();
 const prisma = require('../config/db');
 const crypto = require('crypto');
 const { authenticate } = require('../middleware/auth');
+const { requireRole } = require('../middleware/rbac');
 const emailService = require('../services/email.service');
 
-router.get('/applicant/:id', authenticate, async (req, res, next) => {
+const admissionsAccess = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER');
+
+router.get('/applicant/:id', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const refs = await prisma.applicantReference.findMany({ where: { applicantId: req.params.id } });
     res.json(refs);
   } catch (err) { next(err); }
 });
 
-router.post('/send', authenticate, async (req, res, next) => {
+router.post('/send', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const { applicantId, refType, refereeName, refereeEmail, refereePhone } = req.body;
     const token = crypto.randomBytes(32).toString('hex');
@@ -67,7 +70,7 @@ router.put('/:token/submit', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/:id/resend', authenticate, async (req, res, next) => {
+router.post('/:id/resend', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const ref = await prisma.applicantReference.findUnique({ where: { id: req.params.id } });
     if (!ref) return res.status(404).json({ error: 'Reference not found' });
@@ -94,7 +97,7 @@ router.post('/:id/resend', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/pending', authenticate, async (req, res, next) => {
+router.get('/pending', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const pending = await prisma.applicantReference.findMany({
       where: { status: { in: ['PENDING', 'EXPIRED'] } },

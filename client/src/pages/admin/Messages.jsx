@@ -85,7 +85,7 @@ export default function Messages() {
   };
 
   const handleResolve = async (id) => {
-    await api.put(`/queries/${id}/respond`, { response, status: 'resolved' });
+    await api.put(`/queries/${id}/respond`, { response, status: 'RESOLVED' });
     setQueryId(null); setResponse(''); refetchQ();
   };
 

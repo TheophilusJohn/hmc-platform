@@ -11,24 +11,27 @@ const prisma = require('../config/db');
 async function canAccessSubject(user, subjectId) {
   if (!user || !subjectId) return false;
   if (['FULL_ADMIN', 'TEACHER_ADMIN'].includes(user.role)) return true;
+
+  const subj = await prisma.subject.findUnique({
+    where: { id: subjectId },
+    select: { facultyId: true, status: true },
+  });
+  if (!subj || String(subj.status || 'active').toLowerCase() !== 'active') return false;
+
   if (user.role === 'FACULTY') {
-    const subj = await prisma.subject.findUnique({
-      where: { id: subjectId },
-      select: { facultyId: true },
-    });
-    if (!subj) return false;
     const fp = await prisma.facultyProfile.findUnique({
       where: { userId: user.id },
-      select: { id: true },
+      select: { id: true, user: { select: { status: true } } },
     });
-    return !!fp && fp.id === subj.facultyId;
+    if (!fp || fp.user?.status !== 'ACTIVE') return false;
+    return fp.id === subj.facultyId;
   }
   if (user.role === 'STUDENT') {
     const sp = await prisma.studentProfile.findUnique({
       where: { userId: user.id },
-      select: { id: true },
+      select: { id: true, user: { select: { status: true } } },
     });
-    if (!sp) return false;
+    if (!sp || sp.user?.status !== 'ACTIVE') return false;
     const enr = await prisma.studentSubjectEnrollment.findFirst({
       where: { studentId: sp.id, subjectId },
       select: { id: true },

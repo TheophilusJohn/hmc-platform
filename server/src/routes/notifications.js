@@ -27,20 +27,17 @@ router.get('/unread-count', authenticate, async (req, res, next) => {
 
 router.put('/:id/read', authenticate, async (req, res, next) => {
   try {
-    await prisma.notification.update({ where: { id: req.params.id }, data: { isRead: true } });
+    // Scope to the calling user so callers cannot mark someone else's notifications read.
+    const r = await prisma.notification.updateMany({
+      where: { id: req.params.id, userId: req.user.id },
+      data: { isRead: true },
+    });
+    if (r.count === 0) return res.status(404).json({ error: 'Notification not found' });
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
 router.put('/read-all', authenticate, async (req, res, next) => {
-  try {
-    await prisma.notification.updateMany({ where: { userId: req.user.id }, data: { isRead: true } });
-    res.json({ success: true });
-  } catch (err) { next(err); }
-});
-
-
-router.post('/mark-all-read', authenticate, async (req, res, next) => {
   try {
     await prisma.notification.updateMany({ where: { userId: req.user.id }, data: { isRead: true } });
     res.json({ success: true });

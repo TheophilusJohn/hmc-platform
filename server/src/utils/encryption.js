@@ -40,18 +40,21 @@ function decrypt(ciphertext) {
   try {
     const key = getKey();
     const [ivHex, authTagHex, encryptedHex] = ciphertext.split(':');
-    
+
     const iv = Buffer.from(ivHex, 'hex');
     const authTag = Buffer.from(authTagHex, 'hex');
-    
+
     const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
     decipher.setAuthTag(authTag);
-    
+
     let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
-  } catch (_e) {
-    return null; // Decryption failed — return null safely
+  } catch (err) {
+    // Auth-tag failures and malformed ciphertext should not be silently dropped —
+    // they indicate either bit-rot, tampering, or a key mismatch.
+    console.error('[encryption] decrypt failed:', err.message);
+    return null;
   }
 }
 

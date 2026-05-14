@@ -14,7 +14,7 @@ export default function AcademicExceptions() {
   const exceptions = data?.exceptions || [];
 
   const handleDecide = async (action) => {
-    await api.put(`/exceptions/${selected.id}`, { status: action, ...decision });
+    await api.put(`/exceptions/${selected.id}`, { status: String(action).toUpperCase(), ...decision });
     setSelected(null); refetch();
   };
 

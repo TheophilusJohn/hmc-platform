@@ -49,6 +49,10 @@ export default function Fees() {
   };
 
   const handleInstallmentPay = async (installmentId) => {
+    if (isInternational) {
+      alert('International students must pay via Wise or SWIFT transfer. Contact finance@hmc.college for details.');
+      return;
+    }
     setPaying(true);
     try {
       const { data: order } = await api.post('/payments/installment-order', { installmentId });

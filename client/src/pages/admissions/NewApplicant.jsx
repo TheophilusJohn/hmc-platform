@@ -108,7 +108,7 @@ export default function NewApplicant() {
             <Input label="Last Name" value={form.lastName} onChange={setF('lastName')} />
             <Input label="Email" type="email" value={form.email} onChange={setF('email')} />
             <Input label="Phone" value={form.phone} onChange={setF('phone')} />
-            <Input label="Date of Birth" type="date" value={form.dob} onChange={setF('dob')} />
+            <Input label="Date of Birth" type="date" value={form.dob} onChange={setF('dob')} max={new Date().toISOString().slice(0, 10)} />
             <Select label="Gender" value={form.gender} onChange={setF('gender')}
               options={[{value:'male',label:'Male'},{value:'female',label:'Female'},{value:'other',label:'Other'},{value:'unspecified',label:'Prefer not to say'}]} />
             <Input label="Nationality" value={form.nationality} onChange={setF('nationality')} />
