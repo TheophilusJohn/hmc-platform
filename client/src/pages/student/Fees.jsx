@@ -4,7 +4,7 @@ import { useApi } from '../../hooks/useApi';
 import { loadRazorpay } from '../../utils/razorpay';
 import api from '../../utils/api';
 
-const STATUS_COLORS = { paid: 'green', partial: 'amber', unpaid: 'red', waived: 'teal' };
+const STATUS_COLORS = { paid: 'green', partial: 'amber', unpaid: 'red', waived: 'teal', carried: 'amber' };
 
 export default function Fees() {
   const { data, refetch } = useApi('/fees/my-summary');

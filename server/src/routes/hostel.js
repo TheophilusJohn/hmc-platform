@@ -25,8 +25,10 @@ router.post('/monthly-charge', authenticate, adminOnly, async (req, res, next) =
     });
 
     const now = new Date();
-    const created = await Promise.all(hostellers.map(h =>
-      prisma.studentFeeLedger.create({
+    // Wrap in a transaction so a partial failure (e.g., one bad ledger row)
+    // doesn't leave some hostellers charged and others not for the same month.
+    const created = await prisma.$transaction(
+      hostellers.map(h => prisma.studentFeeLedger.create({
         data: {
           studentId: h.id,
           feeTypeId: feeType.id,
@@ -36,10 +38,10 @@ router.post('/monthly-charge', authenticate, adminOnly, async (req, res, next) =
           status: 'UNPAID',
           dueDate: new Date(now.getFullYear(), now.getMonth(), 10),
         },
-      }).catch(() => null)
-    ));
+      }))
+    );
 
-    res.json({ charged: created.filter(Boolean).length });
+    res.json({ charged: created.length });
   } catch (err) { next(err); }
 });
 

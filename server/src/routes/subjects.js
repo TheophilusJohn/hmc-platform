@@ -70,13 +70,23 @@ router.get('/:id/students', authenticate, facultyOrAbove, async (req, res, next)
 router.post('/:id/enroll', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { studentIds, semesterId } = req.body;
-    const records = await Promise.all(studentIds.map(sid =>
-      prisma.studentSubjectEnrollment.upsert({
-        where: { studentId_subjectId_semesterId: { studentId: sid, subjectId: req.params.id, semesterId } },
-        create: { studentId: sid, subjectId: req.params.id, semesterId, enrollmentType: 'REGULAR' },
-        update: {},
-      })
-    ));
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.json({ enrolled: 0 });
+    }
+    // Chunk the upserts so a large batch doesn't fan out and exhaust the DB connection pool.
+    const CHUNK = 10;
+    const records = [];
+    for (let i = 0; i < studentIds.length; i += CHUNK) {
+      const slice = studentIds.slice(i, i + CHUNK);
+      const out = await Promise.all(slice.map(sid =>
+        prisma.studentSubjectEnrollment.upsert({
+          where: { studentId_subjectId_semesterId: { studentId: sid, subjectId: req.params.id, semesterId } },
+          create: { studentId: sid, subjectId: req.params.id, semesterId, enrollmentType: 'REGULAR' },
+          update: {},
+        })
+      ));
+      records.push(...out);
+    }
     res.json({ enrolled: records.length });
   } catch (err) { next(err); }
 });

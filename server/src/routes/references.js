@@ -9,6 +9,13 @@ const emailService = require('../services/email.service');
 
 const admissionsAccess = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER');
 
+// 5-minute clock-skew tolerance for token expiry checks (DB vs app server drift,
+// and any short gap between referee receiving the link and submitting).
+const TOKEN_SKEW_MS = 5 * 60 * 1000;
+function isExpired(when) {
+  return when && new Date(when).getTime() + TOKEN_SKEW_MS < Date.now();
+}
+
 router.get('/applicant/:id', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const refs = await prisma.applicantReference.findMany({ where: { applicantId: req.params.id } });
@@ -60,7 +67,7 @@ router.put('/:token/submit', async (req, res, next) => {
     const ref = await prisma.applicantReference.findUnique({ where: { token: req.params.token } });
     if (!ref) return res.status(404).json({ error: 'Invalid reference link.' });
     if (ref.status === 'RECEIVED') return res.status(400).json({ error: 'Reference already submitted.' });
-    if (ref.tokenExpiresAt < new Date()) return res.status(400).json({ error: 'This reference link has expired.' });
+    if (isExpired(ref.tokenExpiresAt)) return res.status(400).json({ error: 'This reference link has expired.' });
 
     await prisma.applicantReference.update({
       where: { token: req.params.token },
@@ -126,7 +133,7 @@ router.get('/:token', async (req, res, next) => {
   try {
     const ref = await prisma.applicantReference.findUnique({ where: { token: req.params.token } });
     if (!ref) return res.status(404).json({ error: 'Invalid link.' });
-    if (ref.tokenExpiresAt < new Date()) return res.status(400).json({ error: 'This link has expired.' });
+    if (isExpired(ref.tokenExpiresAt)) return res.status(400).json({ error: 'This link has expired.' });
 
     const applicant = await prisma.applicant.findUnique({
       where: { id: ref.applicantId },

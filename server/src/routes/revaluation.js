@@ -63,10 +63,17 @@ router.get('/', authenticate, adminOrTA, async (req, res, next) => {
       orderBy: { requestedAt: 'desc' },
     });
 
-    const enriched = await Promise.all(revs.map(async r => {
-      const subject = await prisma.subject.findUnique({ where: { id: r.subjectId }, select: { name: true, code: true } });
-      return { ...r, subject };
-    }));
+    // Revaluation has no `subject` Prisma relation, so we can't use `include`.
+    // Batch-fetch all referenced subjects in one query instead of N findUniques.
+    const subjectIds = [...new Set(revs.map(r => r.subjectId).filter(Boolean))];
+    const subjects = subjectIds.length
+      ? await prisma.subject.findMany({
+          where: { id: { in: subjectIds } },
+          select: { id: true, name: true, code: true },
+        })
+      : [];
+    const sMap = Object.fromEntries(subjects.map(s => [s.id, s]));
+    const enriched = revs.map(r => ({ ...r, subject: sMap[r.subjectId] || null }));
 
     res.json(enriched);
   } catch (err) { next(err); }
@@ -79,13 +86,18 @@ router.put('/:id/approve', authenticate, adminOrTA, async (req, res, next) => {
       data: { status: 'approved', taApprovedBy: req.user.id, taApprovedAt: new Date() },
     });
 
-    const subject = await prisma.subject.findUnique({ where: { id: rev.subjectId }, select: { facultyId: true, name: true } });
-    if (subject?.facultyId) {
-      const fp = await prisma.facultyProfile.findUnique({ where: { id: subject.facultyId }, include: { user: true } });
-      if (fp?.user) {
-        await notif.createNotification(fp.user.id, 'revaluation_assigned', 'Revaluation Assigned',
-          `Please re-grade revaluation for ${subject.name}`, '/faculty/exams');
-      }
+    // Single query: pull subject + faculty + faculty.user in one shot.
+    const subject = await prisma.subject.findUnique({
+      where: { id: rev.subjectId },
+      select: {
+        name: true,
+        faculty: { select: { user: { select: { id: true } } } },
+      },
+    });
+    const facultyUserId = subject?.faculty?.user?.id;
+    if (facultyUserId) {
+      await notif.createNotification(facultyUserId, 'revaluation_assigned', 'Revaluation Assigned',
+        `Please re-grade revaluation for ${subject.name}`, '/faculty/exams');
     }
     res.json(rev);
   } catch (err) { next(err); }
@@ -130,16 +142,21 @@ router.put('/:id/faculty-grade', authenticate, requireRole('FACULTY', 'TEACHER_A
 router.put('/:id/reject', authenticate, requireRole('FACULTY', 'TEACHER_ADMIN', 'FULL_ADMIN'), async (req, res, next) => {
   try {
     const { notes } = req.body;
+    // Revaluation has no `subject` Prisma relation — fetch the subject name separately.
     const rev = await prisma.revaluation.update({
       where: { id: req.params.id },
       data: { status: 'rejected', notes: notes || null },
-      include: { student: { include: { user: true } }, subject: { select: { name: true } } },
+      include: { student: { include: { user: true } } },
+    });
+    const subject = await prisma.subject.findUnique({
+      where: { id: rev.subjectId },
+      select: { name: true },
     });
     if (rev.student?.user) {
       try {
         await notif.createNotification(
           rev.student.user.id, 'revaluation_result', 'Revaluation Declined',
-          `Your revaluation request for ${rev.subject?.name || 'a subject'} was declined.`,
+          `Your revaluation request for ${subject?.name || 'a subject'} was declined.`,
           '/student/marksheet'
         );
       } catch (_e) {}

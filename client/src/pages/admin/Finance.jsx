@@ -158,7 +158,7 @@ export default function Finance() {
     { key: 'amount', label: 'Charged', render: v => <span>₹{Number(v).toLocaleString()}</span> },
     { key: 'waivedAmount', label: 'Waived', render: v => v > 0 ? <span style={{ color: '#0F766E' }}>₹{Number(v).toLocaleString()}</span> : '—' },
     { key: 'balance', label: 'Balance', render: v => <strong style={{ color: v > 0 ? '#991B1B' : '#166534' }}>₹{Number(v).toLocaleString()}</strong> },
-    { key: 'status', label: 'Status', render: v => <Badge color={v === 'paid' ? 'green' : v === 'partial' ? 'amber' : v === 'waived' ? 'teal' : 'red'}>{v}</Badge> },
+    { key: 'status', label: 'Status', render: v => <Badge color={v === 'paid' ? 'green' : v === 'partial' || v === 'carried' ? 'amber' : v === 'waived' ? 'teal' : 'red'}>{v}</Badge> },
   ];
 
   const StudentChip = ({ s, onClear }) => (

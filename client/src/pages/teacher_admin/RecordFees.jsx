@@ -21,7 +21,7 @@ export default function RecordFees() {
     { key: 'feeName', label: 'Fee' },
     { key: 'amount', label: 'Charged', render: v => `₹${Number(v).toLocaleString()}` },
     { key: 'balance', label: 'Balance', render: v => <strong style={{ color: v > 0 ? '#991B1B' : '#166534' }}>₹{Number(v).toLocaleString()}</strong> },
-    { key: 'status', label: '', render: v => <Badge color={v === 'paid' ? 'green' : v === 'partial' ? 'amber' : 'red'}>{v}</Badge> },
+    { key: 'status', label: '', render: v => <Badge color={v === 'paid' ? 'green' : v === 'partial' || v === 'carried' ? 'amber' : v === 'waived' ? 'teal' : 'red'}>{v}</Badge> },
   ];
 
   return (

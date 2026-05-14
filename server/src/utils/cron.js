@@ -3,8 +3,27 @@ const cron = require('node-cron');
 const prisma = require('../config/db');
 const notif = require('../services/notification.service');
 
+const TZ = 'Asia/Kolkata';
+
+// Build a Date that represents `Y-M-D 00:00 in IST` — independent of the
+// process TZ. We use Intl to anchor to IST and then construct a UTC Date for
+// the IST midnight of the requested business day.
+function istBusinessDate(year, monthIndex, day) {
+  // toLocaleString with a fixed TZ produces an "ish" representation. Use Date.UTC
+  // for explicit anchoring: midnight IST == 18:30 UTC of the previous calendar day.
+  return new Date(Date.UTC(year, monthIndex, day, -5, -30, 0));
+}
+
+function nowInIST() {
+  // Returns a "today" Y/M/D as observed in IST regardless of process TZ.
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date()).reduce((a, p) => (a[p.type] = p.value, a), {});
+  return { year: Number(parts.year), monthIndex: Number(parts.month) - 1, day: Number(parts.day) };
+}
+
 function initCronJobs() {
-  // Monthly hostel charge on 1st of each month at 02:00
+  // Monthly hostel charge on 1st of each month at 02:00 IST
   cron.schedule('0 2 1 * *', async () => {
     console.log('CRON: Generating monthly hostel charges');
     try {
@@ -15,7 +34,8 @@ function initCronJobs() {
         where: { hostelStatus: 'HOSTELLER', user: { status: 'ACTIVE' } },
       });
 
-      const now = new Date();
+      const today = nowInIST();
+      const dueDate = istBusinessDate(today.year, today.monthIndex, 10);
       let charged = 0;
       for (const h of hostellers) {
         try {
@@ -27,7 +47,7 @@ function initCronJobs() {
               currency: 'INR',
               balance: feeType.domesticAmount,
               status: 'UNPAID',
-              dueDate: new Date(now.getFullYear(), now.getMonth(), 10),
+              dueDate,
             },
           });
           charged++;
@@ -35,9 +55,9 @@ function initCronJobs() {
       }
       console.log(`CRON: Hostel fees charged for ${charged} students`);
     } catch (err) { console.error('CRON hostel charge failed:', err); }
-  });
+  }, { timezone: TZ });
 
-  // Daily at 08:00: check overdue installments
+  // Daily at 08:00 IST: check overdue installments
   cron.schedule('0 8 * * *', async () => {
     console.log('CRON: Checking overdue installments');
     try {
@@ -61,9 +81,9 @@ function initCronJobs() {
         }
       }
     } catch (err) { console.error('CRON installment check failed:', err); }
-  });
+  }, { timezone: TZ });
 
-  // Daily at 09:00: check attendance thresholds and flag at-risk students
+  // Daily at 09:00 IST: check attendance thresholds and flag at-risk students
   cron.schedule('0 9 * * *', async () => {
     console.log('CRON: Checking attendance thresholds');
     try {
@@ -95,9 +115,9 @@ function initCronJobs() {
         }
       }
     } catch (err) { console.error('CRON attendance check failed:', err); }
-  });
+  }, { timezone: TZ });
 
-  // Daily at 10:00: send marks deadline reminders
+  // Daily at 10:00 IST: send marks deadline reminders
   cron.schedule('0 10 * * *', async () => {
     console.log('CRON: Sending marks deadline reminders');
     try {
@@ -129,9 +149,9 @@ function initCronJobs() {
         }
       }
     } catch (err) { console.error('CRON marks deadline reminder failed:', err); }
-  });
+  }, { timezone: TZ });
 
-  console.log('Cron jobs initialized');
+  console.log(`Cron jobs initialized (timezone: ${TZ})`);
 }
 
 module.exports = { initCronJobs };

@@ -89,12 +89,13 @@ router.post('/:id/bulk-charge', authenticate, adminOnly, async (req, res, next) 
     if (lc === 'offline') where.studyMode = 'OFFLINE';
     else if (lc === 'online') where.studyMode = 'ONLINE';
     const profiles = await prisma.studentProfile.findMany({ where });
-    let created = 0;
-    for (const p of profiles) {
-      const isIntl = p.studentType === 'INTERNATIONAL';
-      const amount = Number(isIntl ? (ft.internationalAmount || ft.domesticAmount) : ft.domesticAmount);
-      try {
-        await prisma.studentFeeLedger.create({
+    // All-or-nothing: a single failure rolls back the whole batch so we don't
+    // leave half the students charged. Callers can retry after fixing input.
+    const created = await prisma.$transaction(
+      profiles.map(p => {
+        const isIntl = p.studentType === 'INTERNATIONAL';
+        const amount = Number(isIntl ? (ft.internationalAmount || ft.domesticAmount) : ft.domesticAmount);
+        return prisma.studentFeeLedger.create({
           data: {
             studentId: p.id,
             feeTypeId: ft.id,
@@ -104,14 +105,11 @@ router.post('/:id/bulk-charge', authenticate, adminOnly, async (req, res, next) 
             status: 'UNPAID',
             description: ft.name,
             addedById: req.user.id,
-          }
+          },
         });
-        created++;
-      } catch (e) {
-        console.warn('bulk-charge failed for student', p.id, e.message);
-      }
-    }
-    res.json({ created });
+      })
+    );
+    res.json({ created: created.length });
   } catch (err) { console.error('bulk-charge:', err); next(err); }
 });
 

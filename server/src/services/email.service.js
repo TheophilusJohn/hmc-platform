@@ -6,7 +6,7 @@ if (process.env.SENDGRID_API_KEY) {
 }
 
 const FROM = {
-  email: process.env.SENDGRID_FROM_EMAIL || 'noreply@hmc.edu',
+  email: process.env.SENDGRID_FROM_EMAIL || 'noreply@hmc.college',
   name: process.env.SENDGRID_FROM_NAME || 'Harvest Mission College',
 };
 
@@ -28,7 +28,7 @@ const HMC_FOOTER = `
 <p style="font-size:12px;color:#7B8494">
   Harvest Mission College | Greater Noida, U.P., India<br>
   Accredited by Asia Theological Association (ATA)<br>
-  <a href="mailto:info@hmc.edu">info@hmc.edu</a> | <a href="https://hmc.edu">hmc.edu</a>
+  <a href="mailto:info@hmc.college">info@hmc.college</a> | <a href="https://hmc.college">hmc.college</a>
 </p>`;
 
 async function sendEmail({ to, subject, html }) {
@@ -53,7 +53,7 @@ async function sendWelcomeEmail(user, tempPassword) {
         <strong>Temp Password:</strong> <code style="background:#FFF;padding:4px 8px;border-radius:4px">${esc(tempPassword)}</code>
       </div>
       <p>You will be asked to set a new password on first login. This temporary password expires in 48 hours.</p>
-      <p>For support, email <a href="mailto:admissions@hmc.edu">admissions@hmc.edu</a></p>
+      <p>For support, email <a href="mailto:admissions@hmc.college">admissions@hmc.college</a></p>
     `,
   });
 }

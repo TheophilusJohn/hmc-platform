@@ -3,7 +3,14 @@ import { PageWrapper, Card, Btn, Badge, Table, Tabs, Modal, Input, Select, Searc
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
-const MSG_TYPES = [{ value: 'fee', label: 'Fee Reminder' }, { value: 'exam', label: 'Exam Reminder' }, { value: 'assignment', label: 'Assignment Deadline' }, { value: 'general', label: 'General Announcement' }];
+// Schema enum MessageType: FEE_REMINDER | EXAM_REMINDER | ASSIGNMENT_DEADLINE | GENERAL_ANNOUNCEMENT
+const MSG_TYPES = [
+  { value: 'FEE_REMINDER', label: 'Fee Reminder' },
+  { value: 'EXAM_REMINDER', label: 'Exam Reminder' },
+  { value: 'ASSIGNMENT_DEADLINE', label: 'Assignment Deadline' },
+  { value: 'GENERAL_ANNOUNCEMENT', label: 'General Announcement' },
+];
+const humanizeType = v => String(v || '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 const SCOPES = [
   { value: 'all', label: 'All Students' },
   { value: 'offline', label: 'Offline Students' },
@@ -183,7 +190,7 @@ export default function Messages() {
           <div style={{ marginTop: 20 }}>
             <Table columns={[
               { key: 'subject', label: 'Subject', render: v => <strong style={{ fontSize: 13 }}>{v}</strong> },
-              { key: 'type', label: 'Type', render: v => <Badge color="navy">{v}</Badge> },
+              { key: 'type', label: 'Type', render: v => <Badge color="navy">{humanizeType(v)}</Badge> },
               { key: 'recipientCount', label: 'Recipients', render: v => v || '—' },
               { key: 'channels', label: 'Channels', render: v => {
                 const list = Array.isArray(v) ? v : Object.entries(v || {}).filter(([_, on]) => on).map(([ch]) => ch);

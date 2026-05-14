@@ -37,7 +37,8 @@ const MESSAGE_BODY_MAX = 20 * 1024;
 
 router.post('/', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const { type, subject, body, channels, recipientScope, templateId } = req.body;
+    const { subject, body, channels, recipientScope, templateId } = req.body;
+    const type = req.body.type ? String(req.body.type).toUpperCase() : undefined;
     if (subject && String(subject).length > MESSAGE_SUBJECT_MAX) {
       return res.status(400).json({ error: `Subject exceeds ${MESSAGE_SUBJECT_MAX} character limit` });
     }
