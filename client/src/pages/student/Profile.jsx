@@ -4,7 +4,7 @@ import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
 export default function Profile() {
-  const { data, refetch } = useApi('/auth/me/profile');
+  const { data, refetch } = useApi('/me/profile');
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [pwForm, setPwForm] = useState({ currentPassword: '', newPassword: '', confirm: '' });
@@ -13,7 +13,7 @@ export default function Profile() {
   useEffect(() => { if (data) setForm({ phone: data.phone, permanentAddress: data.permanentAddress, emergencyContact: data.emergencyContact, emergencyPhone: data.emergencyPhone }); }, [data]);
 
   const handleSave = async () => {
-    await api.put('/auth/me/profile', form);
+    await api.put('/me/profile', form);
     setEditing(false); refetch();
   };
 

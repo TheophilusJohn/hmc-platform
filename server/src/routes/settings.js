@@ -5,6 +5,21 @@ const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/rbac');
 
+// GET /api/settings/public - safe-to-expose settings (no auth required)
+router.get('/public', async (req, res, next) => {
+  try {
+    const settings = await prisma.systemSetting.findMany({
+      where: { key: { in: ['razorpay', 'college_info'] } }
+    });
+    const map = Object.fromEntries(settings.map(s => [s.key, s.value]));
+    res.json({
+      razorpay_key_id: map.razorpay?.key_id || null,
+      collegeName: map.college_info?.name || 'Harvest Mission College',
+      shortName: map.college_info?.short_name || 'HMC',
+    });
+  } catch (err) { next(err); }
+});
+
 const SETTING_SECTIONS = [
   'college_info', 'communication_phone', 'sendgrid', 'razorpay', 'wise',
   'admissions', 'academic', 'security', 'privacy', 'fee_lock', 'notifications',
@@ -54,8 +69,12 @@ router.get('/completion', authenticate, adminOnly, async (req, res, next) => {
       label: key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
       configured: configured.includes(key),
     }));
-    const complete = sections.filter(s => s.configured).length;
-    res.json({ percentage: Math.round((complete / sections.length) * 100), sections });
+    const completed = sections.filter(s => s.configured).length;
+    const incomplete = sections.filter(s => !s.configured).map(s => s.label);
+    res.json({
+      percent: Math.round((completed / sections.length) * 100),
+      completed, total: sections.length, incomplete, sections,
+    });
   } catch (err) { next(err); }
 });
 
@@ -79,7 +98,16 @@ router.get('/audit-log', authenticate, adminOnly, async (req, res, next) => {
       prisma.auditLog.count({ where }),
     ]);
 
-    res.json({ logs, total });
+    const flat = logs.map(l => ({
+      id: l.id,
+      actorName: l.actor?.userIdDisplay || '—',
+      actorEmail: l.actor?.email || '',
+      action: l.action,
+      tableName: l.tableName,
+      timestamp: l.timestamp,
+      ipAddress: l.ipAddress,
+    }));
+    res.json({ logs: flat, total });
   } catch (err) { next(err); }
 });
 

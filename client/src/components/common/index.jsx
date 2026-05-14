@@ -41,8 +41,9 @@ const badgeStyles = {
   gray: { bg: '#F8F9FA', color: '#5A6272', border: '#DDE1E7' },
 };
 
-export function Badge({ variant = 'gray', dot, children, style = {} }) {
-  const s = badgeStyles[variant] || badgeStyles.gray;
+export function Badge({ variant, color, dot, children, style = {} }) {
+  const key = color || variant || 'gray';
+  const s = badgeStyles[key] || badgeStyles.gray;
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, fontSize: 12, fontWeight: 500, fontFamily: 'DM Sans,sans-serif', background: s.bg, color: s.color, border: `1px solid ${s.border}`, whiteSpace: 'nowrap', ...style }}>
       {dot && <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.color, flexShrink: 0 }} />}
@@ -53,11 +54,12 @@ export function Badge({ variant = 'gray', dot, children, style = {} }) {
 
 // Card.jsx
 export function Card({ title, action, children, noPad, style = {} }) {
+  const hasHeader = title || action;
   return (
     <div style={{ background: '#fff', border: '1px solid #DDE1E7', borderRadius: 12, ...style }}>
-      {title && (
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #DDE1E7', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0, fontSize: 15, fontFamily: 'Playfair Display,serif', color: '#0F2B4A', fontWeight: 600 }}>{title}</h3>
+      {hasHeader && (
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #DDE1E7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: 56 }}>
+          {title ? <h3 style={{ margin: 0, fontSize: 15, fontFamily: 'Playfair Display,serif', color: '#0F2B4A', fontWeight: 600 }}>{title}</h3> : <span />}
           {action && <div>{action}</div>}
         </div>
       )}
@@ -110,7 +112,7 @@ export function Select({ label, options = [], value, onChange, name, required, e
       {label && <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', fontFamily: 'DM Sans,sans-serif' }}>{label}{required && <span style={{ color: '#991B1B' }}> *</span>}</label>}
       <select name={name} value={value} onChange={onChange} required={required} disabled={disabled}
         style={{ padding: '8px 12px', fontSize: 14, fontFamily: 'DM Sans,sans-serif', border: `1px solid ${error ? '#FECACA' : '#DDE1E7'}`, borderRadius: 8, background: '#fff', color: '#1A1D23', outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer', width: '100%', boxSizing: 'border-box' }}>
-        {placeholder && <option value="">{placeholder}</option>}
+        <option value="">{placeholder || 'Select...'}</option>
         {options.map(o => {
           const val = typeof o === 'object' ? o.value : o;
           const lbl = typeof o === 'object' ? o.label : o;
@@ -172,7 +174,7 @@ export function Modal({ title, onClose, wide, children }) {
           <h3 style={{ margin: 0, fontFamily: 'Playfair Display,serif', fontSize: 18, color: '#0F2B4A' }}>{title}</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: '#7B8494', padding: 4 }}>×</button>
         </div>
-        <div style={{ overflowY: 'auto', flex: 1 }}>{children}</div>
+        <div style={{ overflowY: 'auto', flex: 1, padding: '20px 24px' }}>{children}</div>
       </div>
     </div>
   );
@@ -243,16 +245,31 @@ export function TopBar({ title, subtitle, notifCount = 0, onNotifClick, onMenuCl
 }
 
 // PageWrapper.jsx
-export function PageWrapper({ sidebar, children, topbar }) {
-  return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      {sidebar}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {topbar}
-        <main style={{ flex: 1, overflowY: 'auto', padding: 24, background: '#F8F9FA' }}>
-          {children}
-        </main>
+export function PageWrapper({ sidebar, children, topbar, title, subtitle }) {
+  // Layout mode (with sidebar): used by AdminLayout, FacultyLayout, etc.
+  if (sidebar) {
+    return (
+      <div style={{ display: 'flex', minHeight: '100vh' }}>
+        {sidebar}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {topbar}
+          <main style={{ flex: 1, overflowY: 'auto', padding: 24, background: '#F8F9FA' }}>
+            {children}
+          </main>
+        </div>
       </div>
+    );
+  }
+  // Page mode (just title + content): used inside Outlet-rendered pages
+  return (
+    <div>
+      {(title || subtitle) && (
+        <div style={{ marginBottom: 20 }}>
+          {title && <h1 style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: '#0F2B4A', margin: 0 }}>{title}</h1>}
+          {subtitle && <p style={{ color: '#7B8494', fontSize: 13, margin: '4px 0 0' }}>{subtitle}</p>}
+        </div>
+      )}
+      {children}
     </div>
   );
 }
@@ -296,21 +313,29 @@ export function Pagination({ page, total, pageSize = 20, onChange }) {
 }
 
 // Tabs.jsx
-export function Tabs({ tabs = [], active, onChange, variant = 'underline' }) {
+export function Tabs({ tabs = [], active, value, onChange, variant = 'underline' }) {
+  const activeKey = active !== undefined ? active : value;
+  const keyOf = t => t.key ?? t.value;
   if (variant === 'pill') {
     return (
       <div style={{ display: 'flex', gap: 6, padding: 4, background: '#F8F9FA', borderRadius: 10, border: '1px solid #DDE1E7', width: 'fit-content' }}>
-        {tabs.map(t => (
-          <button key={t.key} onClick={() => onChange(t.key)} style={{ padding: '6px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontFamily: 'DM Sans,sans-serif', fontWeight: 500, background: active === t.key ? '#0F2B4A' : 'transparent', color: active === t.key ? '#fff' : '#5A6272' }}>{t.label}{t.badge ? ` (${t.badge})` : ''}</button>
-        ))}
+        {tabs.map(t => {
+          const k = keyOf(t);
+          return (
+            <button key={k} onClick={() => onChange(k)} style={{ padding: '6px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontFamily: 'DM Sans,sans-serif', fontWeight: 500, background: activeKey === k ? '#0F2B4A' : 'transparent', color: activeKey === k ? '#fff' : '#5A6272' }}>{t.label}{t.badge ? ` (${t.badge})` : ''}</button>
+          );
+        })}
       </div>
     );
   }
   return (
     <div style={{ display: 'flex', borderBottom: '2px solid #DDE1E7', gap: 0, overflowX: 'auto' }}>
-      {tabs.map(t => (
-        <button key={t.key} onClick={() => onChange(t.key)} style={{ padding: '10px 18px', border: 'none', borderBottom: active === t.key ? '2px solid #C9920A' : '2px solid transparent', marginBottom: -2, cursor: 'pointer', fontSize: 13, fontFamily: 'DM Sans,sans-serif', fontWeight: active === t.key ? 600 : 400, color: active === t.key ? '#C9920A' : '#5A6272', background: 'none', whiteSpace: 'nowrap' }}>{t.label}{t.badge ? <span style={{ marginLeft: 6, background: '#DDE1E7', borderRadius: 10, padding: '1px 6px', fontSize: 11 }}>{t.badge}</span> : null}</button>
-      ))}
+      {tabs.map(t => {
+        const k = keyOf(t);
+        return (
+          <button key={k} onClick={() => onChange(k)} style={{ padding: '10px 18px', border: 'none', borderBottom: activeKey === k ? '2px solid #C9920A' : '2px solid transparent', marginBottom: -2, cursor: 'pointer', fontSize: 13, fontFamily: 'DM Sans,sans-serif', fontWeight: activeKey === k ? 600 : 400, color: activeKey === k ? '#C9920A' : '#5A6272', background: 'none', whiteSpace: 'nowrap' }}>{t.label}{t.badge ? <span style={{ marginLeft: 6, background: '#DDE1E7', borderRadius: 10, padding: '1px 6px', fontSize: 11 }}>{t.badge}</span> : null}</button>
+        );
+      })}
     </div>
   );
 }

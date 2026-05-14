@@ -15,7 +15,7 @@ export default function MySubjects() {
           <div key={s.id} style={{ background: '#fff', border: '1px solid #DDE1E7', borderRadius: 12, padding: '18px 20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
               <code style={{ background: '#EEF4FA', padding: '2px 8px', borderRadius: 4, fontSize: 11, color: '#0F2B4A', fontWeight: 600 }}>{s.code}</code>
-              <Badge color={s.examMode === 'online' ? 'teal' : 'navy'}>{s.examMode}</Badge>
+              <Badge color={String(s.examMode).toUpperCase() === 'ONLINE' ? 'teal' : 'navy'}>{s.examMode}</Badge>
             </div>
             <h4 style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, color: '#0F2B4A', margin: '0 0 4px' }}>{s.name}</h4>
             <p style={{ fontSize: 12, color: '#7B8494', margin: '0 0 12px' }}>{s.facultyName}</p>

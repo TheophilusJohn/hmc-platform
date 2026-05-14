@@ -1,9 +1,9 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { useAuth } from './hooks/useAuth';
 
 // Lazy load portals
 const Login = lazy(() => import('./pages/Login'));
+const ChangePassword = lazy(() => import('./pages/ChangePassword'));
 
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout'));
 const AdminDashboard = lazy(() => import('./pages/admin/Dashboard'));
@@ -65,6 +65,32 @@ const ReferenceForm = lazy(() => import('./pages/public/ReferenceForm'));
 const TranscriptVerify = lazy(() => import('./pages/public/TranscriptVerify'));
 const ApplyPage = lazy(() => import('./pages/public/ApplyPage'));
 
+const ROLE_HOME = {
+  FULL_ADMIN: '/admin',
+  TEACHER_ADMIN: '/ta',
+  FACULTY: '/faculty',
+  ADMISSIONS_OFFICER: '/admissions',
+  STUDENT: '/student',
+};
+
+function readSession() {
+  const token = localStorage.getItem('hmc_token');
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    if (payload.exp * 1000 < Date.now()) {
+      localStorage.removeItem('hmc_token');
+      localStorage.removeItem('hmc_user');
+      return null;
+    }
+    return payload;
+  } catch {
+    localStorage.removeItem('hmc_token');
+    localStorage.removeItem('hmc_user');
+    return null;
+  }
+}
+
 function Loading() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'DM Sans,sans-serif', color: '#5A6272' }}>
@@ -73,24 +99,29 @@ function Loading() {
   );
 }
 
+// Protected route — requires authentication, optionally a specific role
 function AuthGuard({ children, roles }) {
-  const token = localStorage.getItem('hmc_token');
-  if (!token) return <Navigate to="/login" replace />;
+  const session = readSession();
+  if (!session) return <Navigate to="/login" replace />;
 
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    if (payload.exp * 1000 < Date.now()) {
-      localStorage.removeItem('hmc_token');
-      return <Navigate to="/login" replace />;
-    }
-    if (roles && !roles.includes(payload.role)) {
-      const roleMap = { admin: '/admin', teacher_admin: '/ta', faculty: '/faculty', admissions: '/admissions', student: '/student' };
-      return <Navigate to={roleMap[payload.role] || '/login'} replace />;
-    }
-  } catch {
-    return <Navigate to="/login" replace />;
+  // If the token says the user must change password, force them to the change-password page
+  // (allow them onto /change-password itself, otherwise everything redirects there)
+  if (session.mustChangePassword && window.location.pathname !== '/change-password') {
+    return <Navigate to="/change-password" replace />;
   }
 
+  if (roles && !roles.includes(session.role)) {
+    return <Navigate to={ROLE_HOME[session.role] || '/login'} replace />;
+  }
+  return children;
+}
+
+// Public-only route — for /login, /apply, etc. Redirects authenticated users to their home
+function PublicOnly({ children }) {
+  const session = readSession();
+  if (session) {
+    return <Navigate to={ROLE_HOME[session.role] || '/'} replace />;
+  }
   return children;
 }
 
@@ -99,15 +130,20 @@ export default function App() {
     <BrowserRouter>
       <Suspense fallback={<Loading />}>
         <Routes>
-          {/* Public */}
-          <Route path="/login" element={<Login />} />
+          {/* Public — redirect away if already logged in */}
+          <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
           <Route path="/apply" element={<ApplyPage />} />
+
+          {/* Public — always accessible (token-based, no auth) */}
           <Route path="/references/:token" element={<ReferenceForm />} />
           <Route path="/verify/:uuid" element={<TranscriptVerify />} />
           <Route path="/certificates/verify/:uuid" element={<TranscriptVerify type="certificate" />} />
 
-          {/* Admin */}
-          <Route path="/admin" element={<AuthGuard roles={['admin']}><AdminLayout /></AuthGuard>}>
+          {/* Authenticated — any role */}
+          <Route path="/change-password" element={<AuthGuard><ChangePassword /></AuthGuard>} />
+
+          {/* Admin — FULL_ADMIN only */}
+          <Route path="/admin" element={<AuthGuard roles={['FULL_ADMIN']}><AdminLayout /></AuthGuard>}>
             <Route index element={<AdminDashboard />} />
             <Route path="users" element={<UserManagement />} />
             <Route path="finance" element={<Finance />} />
@@ -121,8 +157,8 @@ export default function App() {
             <Route path="settings" element={<SystemSettings />} />
           </Route>
 
-          {/* Admissions */}
-          <Route path="/admissions" element={<AuthGuard roles={['admissions']}><AdmissionsLayout /></AuthGuard>}>
+          {/* Admissions — ADMISSIONS_OFFICER, FULL_ADMIN */}
+          <Route path="/admissions" element={<AuthGuard roles={['ADMISSIONS_OFFICER', 'FULL_ADMIN']}><AdmissionsLayout /></AuthGuard>}>
             <Route index element={<AdmissionsDashboard />} />
             <Route path="pipeline" element={<Pipeline />} />
             <Route path="new" element={<NewApplicant />} />
@@ -131,8 +167,8 @@ export default function App() {
             <Route path="fees" element={<FeeRecording />} />
           </Route>
 
-          {/* Faculty */}
-          <Route path="/faculty" element={<AuthGuard roles={['faculty']}><FacultyLayout /></AuthGuard>}>
+          {/* Faculty — FACULTY, TEACHER_ADMIN */}
+          <Route path="/faculty" element={<AuthGuard roles={['FACULTY', 'TEACHER_ADMIN']}><FacultyLayout /></AuthGuard>}>
             <Route index element={<FacultyDashboard />} />
             <Route path="subjects" element={<MySubjects />} />
             <Route path="content" element={<CourseContent />} />
@@ -145,8 +181,8 @@ export default function App() {
             <Route path="messages" element={<FacultyMessages />} />
           </Route>
 
-          {/* Teacher-Admin */}
-          <Route path="/ta" element={<AuthGuard roles={['teacher_admin']}><TALayout /></AuthGuard>}>
+          {/* Teacher-Admin — TEACHER_ADMIN only */}
+          <Route path="/ta" element={<AuthGuard roles={['TEACHER_ADMIN']}><TALayout /></AuthGuard>}>
             <Route index element={<TAAdminDashboard />} />
             <Route path="assignments" element={<CourseAssignment />} />
             <Route path="progression" element={<BatchProgression />} />
@@ -155,8 +191,8 @@ export default function App() {
             <Route path="fees" element={<RecordFees />} />
           </Route>
 
-          {/* Student */}
-          <Route path="/student" element={<AuthGuard roles={['student']}><StudentLayout /></AuthGuard>}>
+          {/* Student — STUDENT only */}
+          <Route path="/student" element={<AuthGuard roles={['STUDENT']}><StudentLayout /></AuthGuard>}>
             <Route index element={<StudentDashboard />} />
             <Route path="subjects" element={<StudentMySubjects />} />
             <Route path="content" element={<StudentCourseContent />} />
@@ -171,7 +207,7 @@ export default function App() {
             <Route path="profile" element={<StudentProfile />} />
           </Route>
 
-          {/* Default */}
+          {/* Default — send to login (PublicOnly there bounces logged-in users to their home) */}
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>

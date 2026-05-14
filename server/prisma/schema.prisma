@@ -311,6 +311,14 @@ model User {
   profileChangeRequests ProfileChangeRequest[]
   profileChangeReviewers ProfileChangeRequest[] @relation("ChangeReviewer")
   gradesConfirmed    Revaluation[]    @relation("RevaluationConfirmer")
+  // Direct Messages (1:1)
+  directMessagesSent     DirectMessage[]     @relation("DirectMessageSender")
+  directMessagesReceived DirectMessage[]     @relation("DirectMessageRecipient")
+  // Academic Exceptions
+  exceptionsRequested    AcademicException[] @relation("ExceptionRequester")
+  exceptionsDecided      AcademicException[] @relation("ExceptionDecider")
+  // Timetable (faculty assignments)
+  timetableSlots         TimetableSlot[]
 
   @@index([role])
   @@index([status])
@@ -368,6 +376,7 @@ model StudentProfile {
   revaluations    Revaluation[]
   installmentPlans InstallmentPlan[]
   degreeCertificate DegreeCertificate?
+  academicExceptions AcademicException[]
 
   @@index([batchId])
   @@index([programmeId])
@@ -454,6 +463,8 @@ model Semester {
   ledgerEntries  StudentFeeLedger[]
   enrollments    StudentSubjectEnrollment[]
   installmentPlans InstallmentPlan[]
+  timetableSlots   TimetableSlot[]
+  academicExceptions AcademicException[]
 
   @@index([batchId])
   @@index([status])
@@ -489,6 +500,8 @@ model Subject {
   exams       Exam[]
   attendance  Attendance[]
   questionBankItems QuestionBankItem[]
+  timetableSlots    TimetableSlot[]
+  academicExceptions AcademicException[]
 
   @@index([semesterId])
   @@index([batchId])
@@ -541,9 +554,13 @@ model CourseUnit {
 model UnitContent {
   id          String  @id @default(uuid())
   unitId      String
-  type        String  // notes | video | pdf | scripture | discussion | assignment
+  title       String?
+  description String?
+  type        String  // notes | video | pdf | scripture | discussion | assignment | lecture | link | material
   contentUrl  String?
   contentText String?
+  deadline    DateTime?
+  isPublished Boolean  @default(true)
   orderIndex  Int
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -705,7 +722,7 @@ model Revaluation {
 
 model Attendance {
   id          String           @id @default(uuid())
-  subjectId   String
+  subjectId   String?
   studentId   String
   date        DateTime         @db.Date
   status      AttendanceStatus
@@ -714,7 +731,7 @@ model Attendance {
   notes       String?
   createdAt   DateTime         @default(now())
 
-  subject     Subject          @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  subject     Subject?          @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   student     StudentProfile   @relation(fields: [studentId], references: [id], onDelete: Restrict)
   markedBy    FacultyProfile?  @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: SetNull)
 
@@ -1163,4 +1180,107 @@ model ProfileChangeRequest {
 
   @@index([studentId])
   @@index([status])
+}
+
+
+// =====================================================
+// TIMETABLE / DIRECT MESSAGES / ACADEMIC EXCEPTIONS
+// Added in v1.1 to complete frontend feature parity
+// =====================================================
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum AcademicExceptionType {
+  MEDICAL_LEAVE
+  ATTENDANCE_OVERRIDE
+  MARKS_OVERRIDE
+  GRADE_CORRECTION
+  REPEAT_SUBJECT
+  WITHDRAWAL_WITHOUT_PENALTY
+}
+
+enum AcademicExceptionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model TimetableSlot {
+  id          String    @id @default(uuid())
+  semesterId  String
+  subjectId   String
+  facultyId   String?
+  day         DayOfWeek
+  startTime   String    // "HH:MM" 24-hr format
+  endTime     String
+  room        String?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  semester    Semester  @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  subject     Subject   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  faculty     User?     @relation(fields: [facultyId], references: [id], onDelete: SetNull)
+
+  @@index([semesterId])
+  @@index([subjectId])
+  @@index([facultyId])
+  @@index([day])
+}
+
+model DirectMessage {
+  id           String    @id @default(uuid())
+  senderId     String
+  recipientId  String
+  subject      String
+  body         String
+  isRead       Boolean   @default(false)
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  sender       User      @relation("DirectMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient    User      @relation("DirectMessageRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([senderId])
+  @@index([recipientId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+model AcademicException {
+  id              String                  @id @default(uuid())
+  studentId       String
+  subjectId       String?
+  semesterId      String?
+  type            AcademicExceptionType
+  status          AcademicExceptionStatus @default(PENDING)
+  reason          String
+  requestedValue  String?
+  newValue        String?
+  attachmentUrl   String?
+  requestedById   String
+  decidedById     String?
+  decidedAt       DateTime?
+  decisionNotes   String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  student         StudentProfile          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject         Subject?                @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  semester        Semester?               @relation(fields: [semesterId], references: [id], onDelete: SetNull)
+  requestedBy     User                    @relation("ExceptionRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy       User?                   @relation("ExceptionDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([studentId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
 }

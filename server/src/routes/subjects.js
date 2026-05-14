@@ -1,30 +1,31 @@
+// server/src/routes/subjects.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, adminOrTA, facultyOrAbove } = require('../middleware/rbac');
 
-// GET /api/subjects
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const { semesterId, batchId, facultyId, programmeId } = req.query;
     const where = {};
-    if (semesterId) where.semester_id = semesterId;
-    if (batchId) where.batch_id = batchId;
-    if (facultyId) where.faculty_id = facultyId;
-    if (programmeId) where.programme_id = programmeId;
+    if (semesterId) where.semesterId = semesterId;
+    if (batchId) where.batchId = batchId;
+    if (facultyId) where.facultyId = facultyId;
+    if (programmeId) where.programmeId = programmeId;
 
-    // Faculty: only own subjects
-    if (req.user.role === 'faculty') where.faculty_id = req.user.id;
+    if (req.user.role === 'FACULTY') {
+      const fp = await prisma.facultyProfile.findFirst({ where: { userId: req.user.id } });
+      if (fp) where.facultyId = fp.id;
+    }
 
     const subjects = await prisma.subject.findMany({
       where,
       include: {
         programme: { select: { name: true, code: true } },
         batch: { select: { name: true } },
-        semester: { select: { name: true, academic_year: true } },
-        faculty: { include: { faculty_profile: { select: { first_name: true, last_name: true } } } },
+        semester: { select: { name: true, academicYear: true } },
+        faculty: { select: { firstName: true, lastName: true } },
         _count: { select: { enrollments: true } },
       },
       orderBy: { code: 'asc' },
@@ -33,15 +34,13 @@ router.get('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/subjects
 router.post('/', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const subject = await prisma.subject.create({ data: { ...req.body, status: 'draft' } });
+    const subject = await prisma.subject.create({ data: { ...req.body, status: 'active' } });
     res.status(201).json(subject);
   } catch (err) { next(err); }
 });
 
-// PUT /api/subjects/:id
 router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const subject = await prisma.subject.update({ where: { id: req.params.id }, data: req.body });
@@ -49,7 +48,6 @@ router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/subjects/:id/archive
 router.post('/:id/archive', authenticate, adminOnly, async (req, res, next) => {
   try {
     const subject = await prisma.subject.update({ where: { id: req.params.id }, data: { status: 'archived' } });
@@ -57,29 +55,25 @@ router.post('/:id/archive', authenticate, adminOnly, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/subjects/:id/students
 router.get('/:id/students', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const enrollments = await prisma.studentSubjectEnrollment.findMany({
-      where: { subject_id: req.params.id },
+      where: { subjectId: req.params.id },
       include: {
-        student: {
-          include: { student_profile: { select: { first_name: true, last_name: true, photo_url: true } } },
-        },
+        student: { select: { firstName: true, lastName: true, photoUrl: true, user: { select: { userIdDisplay: true } } } },
       },
     });
     res.json(enrollments);
   } catch (err) { next(err); }
 });
 
-// POST /api/subjects/:id/enroll
 router.post('/:id/enroll', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { studentIds, semesterId } = req.body;
     const records = await Promise.all(studentIds.map(sid =>
       prisma.studentSubjectEnrollment.upsert({
-        where: { student_id_subject_id: { student_id: sid, subject_id: req.params.id } },
-        create: { student_id: sid, subject_id: req.params.id, semester_id: semesterId, enrollment_type: 'regular' },
+        where: { studentId_subjectId_semesterId: { studentId: sid, subjectId: req.params.id, semesterId } },
+        create: { studentId: sid, subjectId: req.params.id, semesterId, enrollmentType: 'REGULAR' },
         update: {},
       })
     ));
@@ -87,23 +81,22 @@ router.post('/:id/enroll', authenticate, adminOrTA, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/subjects/:id/conflict-check
 router.get('/:id/conflict-check', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const subject = await prisma.subject.findUnique({ where: { id: req.params.id } });
     const exams = await prisma.exam.findMany({
-      where: { subject_id: req.params.id, type: 'ese', status: { not: 'archived' } },
+      where: { subjectId: req.params.id, type: 'ESE', status: { not: 'archived' } },
     });
     const conflicts = [];
     for (const exam of exams) {
-      if (!exam.start_datetime) continue;
+      if (!exam.startDatetime) continue;
       const overlapping = await prisma.exam.findMany({
         where: {
           id: { not: exam.id },
-          type: 'ese',
-          subject: { batch_id: subject.batch_id },
-          start_datetime: { lte: exam.end_datetime },
-          end_datetime: { gte: exam.start_datetime },
+          type: 'ESE',
+          subject: { batchId: subject.batchId },
+          startDatetime: { lte: exam.endDatetime },
+          endDatetime: { gte: exam.startDatetime },
         },
         include: { subject: { select: { name: true, code: true } } },
       });
@@ -111,6 +104,19 @@ router.get('/:id/conflict-check', authenticate, facultyOrAbove, async (req, res,
     }
     res.json({ hasConflicts: conflicts.length > 0, conflicts });
   } catch (err) { next(err); }
+});
+
+
+router.delete('/:id', authenticate, adminOnly, async (req, res, next) => {
+  try {
+    await prisma.subject.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'P2003' || err.code === 'P2014') {
+      return res.status(400).json({ error: 'Cannot delete: subject has exams, content, or enrollments. Archive it instead.' });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

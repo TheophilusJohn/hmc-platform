@@ -14,44 +14,138 @@ const MODES = [
   { value: 'swift', label: 'SWIFT Wire' },
 ];
 
-const WAIVER_TYPES = [{ value: 'full', label: 'Full (100%)' }, { value: 'partial_amount', label: 'Partial – Fixed Amount' }, { value: 'partial_percent', label: 'Partial – Percentage' }];
+const WAIVER_TYPES = [
+  { value: 'FULL', label: 'Full (100%)' },
+  { value: 'PARTIAL_AMOUNT', label: 'Partial – Fixed Amount' },
+  { value: 'PARTIAL_PERCENT', label: 'Partial – Percentage' },
+];
 const WAIVER_REASONS = ['Scholarship', 'Financial hardship', 'Merit award', 'Staff/faculty dependent', 'Ministry/work scholarship', 'Custom'];
+
+const profileFromUser = (u) => {
+  const sp = u.studentProfile;
+  if (!sp) return null;
+  return {
+    id: sp.id,
+    userIdDisplay: u.userIdDisplay,
+    name: `${sp.firstName || ''} ${sp.lastName || ''}`.trim() || u.email,
+    programme: sp.programme?.name || '',
+  };
+};
 
 export default function Finance() {
   const [tab, setTab] = useState('overview');
-  const [searchStudent, setSearchStudent] = useState('');
-  const [selectedStudent, setSelectedStudent] = useState(null);
-  const [payForm, setPayForm] = useState({ studentId: '', amount: '', mode: 'cash', notes: '' });
-  const [waiverForm, setWaiverForm] = useState({ studentId: '', ledgerId: '', type: 'full', value: '', reason: 'Scholarship' });
-  const [chargeForm, setChargeForm] = useState({ scope: 'all', name: '', amount: '', feeTypeId: '' });
-  const [preview, setPreview] = useState(null);
 
+  // Student-picker (shared modal)
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState(null); // 'ledger' | 'pay' | 'waiver' | 'single'
+  const [pickerSearch, setPickerSearch] = useState('');
+
+  // Selected student per workflow
+  const [selectedStudent, setSelectedStudent] = useState(null);          // ledger viewer
+  const [payStudent, setPayStudent] = useState(null);
+  const [waiverStudent, setWaiverStudent] = useState(null);
+  const [chargeStudent, setChargeStudent] = useState(null);
+
+  // Forms
+  const [payForm, setPayForm] = useState({ studentId: '', ledgerId: '', amount: '', mode: 'cash', notes: '', currency: 'INR' });
+  const [waiverForm, setWaiverForm] = useState({ studentId: '', ledgerId: '', waiverType: 'FULL', amountOrPercent: '', reason: 'Scholarship' });
+  const [chargeMode, setChargeMode] = useState('bulk');                  // 'bulk' | 'single'
+  const [bulkChargeForm, setBulkChargeForm] = useState({ scope: 'all', feeTypeId: '' });
+  const [singleChargeForm, setSingleChargeForm] = useState({ studentId: '', feeTypeId: '', customAmount: '', customDescription: '' });
+  const [bulkPreview, setBulkPreview] = useState(null);
+
+  // Data
   const { data: overview } = useApi('/reports/financial/summary');
-  const { data: outstanding } = useApi('/reports/financial/outstanding');
+  const { data: outstanding, refetch: refetchOutstanding } = useApi('/reports/financial/outstanding');
   const { data: feeTypes } = useApi('/fee-types');
   const { data: ledger, refetch: refetchLedger } = useApi(selectedStudent ? `/students/${selectedStudent.id}/ledger` : null, [selectedStudent]);
+  const { data: payLedger } = useApi(payStudent ? `/students/${payStudent.id}/ledger` : null, [payStudent]);
+  const { data: waiverLedger, refetch: refetchWaiverLedger } = useApi(waiverStudent ? `/students/${waiverStudent.id}/ledger` : null, [waiverStudent]);
+  const { data: pickerStudents } = useApi(pickerOpen ? `/users?role=STUDENT&search=${encodeURIComponent(pickerSearch)}` : null, [pickerOpen, pickerSearch]);
 
+  const feeTypeOpts = (feeTypes?.fees || feeTypes?.feeTypes || []).map(f => ({
+    value: f.id, label: `${f.name} (Domestic ₹${Number(f.domesticAmount || 0).toLocaleString()} / Intl $${Number(f.internationalAmount || 0).toLocaleString()})`
+  }));
+
+  // Flatten ledger entries with balance > 0 for dropdowns
+  const flatLedger = (l) => (l?.semesters || []).flatMap(s =>
+    (s.entries || []).filter(e => Number(e.balance) > 0).map(e => ({
+      value: e.id,
+      label: `${s.name} · ${e.feeName} — Balance ₹${Number(e.balance).toLocaleString()}`,
+    }))
+  );
+  const payLedgerOpts = flatLedger(payLedger);
+  const waiverLedgerOpts = flatLedger(waiverLedger);
+
+  // ===== Picker =====
+  const openPicker = (target) => { setPickerTarget(target); setPickerSearch(''); setPickerOpen(true); };
+  const handlePickStudent = (u) => {
+    const info = profileFromUser(u);
+    if (!info) { alert('That user has no student profile.'); return; }
+    if (pickerTarget === 'ledger') setSelectedStudent(info);
+    if (pickerTarget === 'pay') { setPayStudent(info); setPayForm(f => ({ ...f, studentId: info.id, ledgerId: '' })); }
+    if (pickerTarget === 'waiver') { setWaiverStudent(info); setWaiverForm(f => ({ ...f, studentId: info.id, ledgerId: '' })); }
+    if (pickerTarget === 'single') { setChargeStudent(info); setSingleChargeForm(f => ({ ...f, studentId: info.id })); }
+    setPickerOpen(false);
+  };
+
+  // ===== Handlers =====
   const handleRecordPayment = async () => {
-    await api.post('/payments/offline', payForm);
-    setPayForm({ studentId: '', amount: '', mode: 'cash', notes: '' });
-    if (selectedStudent?.id === payForm.studentId) refetchLedger();
+    if (!payForm.studentId || !payForm.amount) { alert('Pick a student and enter amount.'); return; }
+    try {
+      const { data } = await api.post('/payments/offline', payForm);
+      alert(`Payment recorded. Receipt: ${data?.receiptNo || '—'}`);
+      setPayForm({ studentId: '', ledgerId: '', amount: '', mode: 'cash', notes: '', currency: 'INR' });
+      setPayStudent(null);
+      refetchOutstanding();
+      if (selectedStudent?.id === payStudent?.id) refetchLedger();
+    } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
   };
 
   const handleApplyWaiver = async () => {
-    await api.post('/waivers', waiverForm);
-    setWaiverForm({ studentId: '', ledgerId: '', type: 'full', value: '', reason: 'Scholarship' });
+    if (!waiverForm.studentId || !waiverForm.ledgerId) { alert('Pick a student and ledger entry first.'); return; }
+    if (waiverForm.waiverType !== 'FULL' && !waiverForm.amountOrPercent) { alert('Enter the amount or percentage.'); return; }
+    try {
+      await api.post('/waivers', waiverForm);
+      alert('Waiver applied.');
+      setWaiverForm({ studentId: '', ledgerId: '', waiverType: 'FULL', amountOrPercent: '', reason: 'Scholarship' });
+      setWaiverStudent(null);
+      refetchOutstanding();
+      refetchWaiverLedger();
+    } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
   };
 
-  const handlePreviewCharge = async () => {
-    const { data } = await api.post('/fee-types/' + chargeForm.feeTypeId + '/bulk-charge/preview', chargeForm);
-    setPreview(data);
+  const handlePreviewBulkCharge = async () => {
+    if (!bulkChargeForm.feeTypeId) { alert('Pick a fee type.'); return; }
+    try {
+      const { data } = await api.post(`/fee-types/${bulkChargeForm.feeTypeId}/bulk-charge/preview`, { scope: bulkChargeForm.scope });
+      setBulkPreview(data);
+    } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
   };
 
-  const handleApplyCharge = async () => {
-    await api.post('/fee-types/' + chargeForm.feeTypeId + '/bulk-charge', chargeForm);
-    setPreview(null);
+  const handleApplyBulkCharge = async () => {
+    try {
+      const { data } = await api.post(`/fee-types/${bulkChargeForm.feeTypeId}/bulk-charge`, { scope: bulkChargeForm.scope });
+      alert(`Charged ${data?.created || 0} students.`);
+      setBulkPreview(null);
+      setBulkChargeForm({ scope: 'all', feeTypeId: '' });
+      refetchOutstanding();
+    } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
   };
 
+  const handleSingleCharge = async () => {
+    if (!singleChargeForm.studentId || !singleChargeForm.feeTypeId) { alert('Pick a student and fee type.'); return; }
+    try {
+      await api.post(`/fee-types/${singleChargeForm.feeTypeId}/charge-student`, singleChargeForm);
+      alert('Fee charged to student.');
+      setSingleChargeForm({ studentId: '', feeTypeId: '', customAmount: '', customDescription: '' });
+      setChargeStudent(null);
+      refetchOutstanding();
+      if (selectedStudent?.id === chargeStudent?.id) refetchLedger();
+    } catch (e) { alert('Failed: ' + (e.response?.data?.error || e.message)); }
+  };
+
+  // ===== Columns =====
   const outstandingCols = [
     { key: 'name', label: 'Student', render: (_, r) => <div><div style={{ fontWeight: 500 }}>{r.name}</div><div style={{ fontSize: 12, color: '#7B8494' }}>{r.userIdDisplay}</div></div> },
     { key: 'programme', label: 'Programme', render: v => <span style={{ fontSize: 13 }}>{v}</span> },
@@ -59,14 +153,23 @@ export default function Finance() {
     { key: 'lastPaid', label: 'Last Payment', render: v => v ? new Date(v).toLocaleDateString('en-IN') : '—' },
     { key: 'actions', label: '', render: (_, r) => <Btn size="sm" onClick={() => setSelectedStudent(r)}>View Ledger</Btn> },
   ];
-
   const ledgerCols = [
     { key: 'feeName', label: 'Fee', render: (v, r) => <div><div style={{ fontWeight: 500 }}>{v}</div>{r.carryForwardFrom && <div style={{ fontSize: 11, color: '#C9920A' }}>↑ Carried from {r.originSemester}</div>}</div> },
     { key: 'amount', label: 'Charged', render: v => <span>₹{Number(v).toLocaleString()}</span> },
     { key: 'waivedAmount', label: 'Waived', render: v => v > 0 ? <span style={{ color: '#0F766E' }}>₹{Number(v).toLocaleString()}</span> : '—' },
     { key: 'balance', label: 'Balance', render: v => <strong style={{ color: v > 0 ? '#991B1B' : '#166534' }}>₹{Number(v).toLocaleString()}</strong> },
-    { key: 'status', label: 'Status', render: v => <Badge color={v === 'paid' ? 'green' : v === 'partial' ? 'amber' : 'red'}>{v}</Badge> },
+    { key: 'status', label: 'Status', render: v => <Badge color={v === 'paid' ? 'green' : v === 'partial' ? 'amber' : v === 'waived' ? 'teal' : 'red'}>{v}</Badge> },
   ];
+
+  const StudentChip = ({ s, onClear }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#EEF4FA', borderRadius: 8, marginBottom: 12 }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 600, color: '#0F2B4A' }}>{s.name}</div>
+        <div style={{ fontSize: 12, color: '#7B8494' }}>{s.userIdDisplay}{s.programme && ` · ${s.programme}`}</div>
+      </div>
+      <Btn size="sm" variant="outline" onClick={onClear}>Change</Btn>
+    </div>
+  );
 
   return (
     <PageWrapper title="Finance" subtitle="Fee ledgers, payments, waivers and charges">
@@ -83,7 +186,7 @@ export default function Finance() {
           { value: 'ledger', label: 'Student Ledger' },
           { value: 'payment', label: 'Record Payment' },
           { value: 'waiver', label: 'Waivers' },
-          { value: 'charge', label: 'Mid-Sem Charge' },
+          { value: 'charge', label: 'Apply Charge' },
         ]} />
 
         {tab === 'overview' && (
@@ -95,94 +198,143 @@ export default function Finance() {
 
         {tab === 'ledger' && (
           <div style={{ marginTop: 20 }}>
-            <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
-              <SearchInput value={searchStudent} onChange={setSearchStudent} placeholder="Search student..." />
-            </div>
             {selectedStudent ? (
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, padding: '12px 16px', background: '#EEF4FA', borderRadius: 8 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, color: '#0F2B4A' }}>{selectedStudent.name}</div>
-                    <div style={{ fontSize: 12, color: '#7B8494' }}>{selectedStudent.userIdDisplay} · {selectedStudent.programme}</div>
-                  </div>
-                  <div style={{ flex: 1 }} />
-                  <Btn variant="outline" size="sm" onClick={() => setSelectedStudent(null)}>Clear</Btn>
-                </div>
-                {ledger?.semesters?.map(sem => (
+                <StudentChip s={selectedStudent} onClear={() => setSelectedStudent(null)} />
+                {(ledger?.semesters || []).map(sem => (
                   <div key={sem.id} style={{ marginBottom: 20 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: '#5A6272', marginBottom: 8 }}>{sem.name} — Balance: <strong style={{ color: '#991B1B' }}>₹{Number(sem.balance).toLocaleString()}</strong></div>
                     <Table columns={ledgerCols} rows={sem.entries || []} />
                   </div>
                 ))}
+                {(ledger?.semesters || []).length === 0 && <div style={{ color: '#7B8494', padding: 12 }}>No fee entries yet for this student.</div>}
               </div>
-            ) : <div style={{ color: '#7B8494', padding: 20, textAlign: 'center' }}>Search and select a student to view their ledger.</div>}
+            ) : (
+              <div style={{ padding: 20, textAlign: 'center' }}>
+                <div style={{ color: '#7B8494', marginBottom: 12 }}>Select a student to view their ledger.</div>
+                <Btn onClick={() => openPicker('ledger')}>Select Student</Btn>
+              </div>
+            )}
           </div>
         )}
 
         {tab === 'payment' && (
-          <div style={{ marginTop: 20, maxWidth: 500 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div style={{ gridColumn: '1/-1' }}>
-                <Input label="Student ID or Name" value={payForm.studentId} onChange={e => setPayForm(f => ({ ...f, studentId: e.target.value }))} placeholder="HMC-S-0001 or name" />
+          <div style={{ marginTop: 20, maxWidth: 560 }}>
+            {payStudent
+              ? <StudentChip s={payStudent} onClear={() => { setPayStudent(null); setPayForm(f => ({ ...f, studentId: '', ledgerId: '' })); }} />
+              : <Btn variant="outline" onClick={() => openPicker('pay')} style={{ marginBottom: 12 }}>Select Student</Btn>}
+            {payStudent && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <Input label="Amount" type="number" value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} />
+                <Select label="Currency" value={payForm.currency} onChange={e => setPayForm(f => ({ ...f, currency: e.target.value }))} options={[{ value: 'INR', label: 'INR ₹' }, { value: 'USD', label: 'USD $' }]} />
+                <Select label="Payment Mode" value={payForm.mode} onChange={e => setPayForm(f => ({ ...f, mode: e.target.value }))} options={MODES} />
+                <Select label="Allocate to (optional)" value={payForm.ledgerId} onChange={e => setPayForm(f => ({ ...f, ledgerId: e.target.value }))}
+                  options={[{ value: '', label: '— General (no allocation) —' }, ...payLedgerOpts]} />
+                <div style={{ gridColumn: '1/-1' }}>
+                  <Input label="Notes (optional)" value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} />
+                </div>
               </div>
-              <Input label="Amount" type="number" value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} />
-              <Select label="Payment Mode" value={payForm.mode} onChange={e => setPayForm(f => ({ ...f, mode: e.target.value }))} options={MODES} />
-              <div style={{ gridColumn: '1/-1' }}>
-                <Input label="Notes (optional)" value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} />
-              </div>
-            </div>
-            <div style={{ marginTop: 20 }}>
-              <Btn onClick={handleRecordPayment}>Record Payment & Generate Receipt</Btn>
-            </div>
+            )}
+            {payStudent && <Btn style={{ marginTop: 16 }} onClick={handleRecordPayment}>Record Payment & Generate Receipt</Btn>}
           </div>
         )}
 
         {tab === 'waiver' && (
-          <div style={{ marginTop: 20, maxWidth: 500 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <Input label="Student ID" value={waiverForm.studentId} onChange={e => setWaiverForm(f => ({ ...f, studentId: e.target.value }))} />
-              <Input label="Ledger Entry ID" value={waiverForm.ledgerId} onChange={e => setWaiverForm(f => ({ ...f, ledgerId: e.target.value }))} />
-              <Select label="Waiver Type" value={waiverForm.type} onChange={e => setWaiverForm(f => ({ ...f, type: e.target.value }))} options={WAIVER_TYPES} />
-              {waiverForm.type !== 'full' && <Input label={waiverForm.type === 'partial_amount' ? 'Amount (₹)' : 'Percentage (%)'} value={waiverForm.value} onChange={e => setWaiverForm(f => ({ ...f, value: e.target.value }))} />}
-              <div style={{ gridColumn: '1/-1' }}>
-                <Select label="Reason" value={waiverForm.reason} onChange={e => setWaiverForm(f => ({ ...f, reason: e.target.value }))} options={WAIVER_REASONS.map(r => ({ value: r, label: r }))} />
-              </div>
-            </div>
-            <div style={{ marginTop: 8, padding: '10px 12px', background: '#FFFBF0', border: '1px solid #F5E6BE', borderRadius: 8, fontSize: 13, color: '#92400E' }}>
-              Student will be notified instantly when waiver is applied.
-            </div>
-            <Btn style={{ marginTop: 16 }} onClick={handleApplyWaiver}>Apply Waiver</Btn>
+          <div style={{ marginTop: 20, maxWidth: 560 }}>
+            {waiverStudent
+              ? <StudentChip s={waiverStudent} onClear={() => { setWaiverStudent(null); setWaiverForm(f => ({ ...f, studentId: '', ledgerId: '' })); }} />
+              : <Btn variant="outline" onClick={() => openPicker('waiver')} style={{ marginBottom: 12 }}>Select Student</Btn>}
+            {waiverStudent && (
+              <>
+                <Select label="Ledger Entry" value={waiverForm.ledgerId} onChange={e => setWaiverForm(f => ({ ...f, ledgerId: e.target.value }))}
+                  options={[{ value: '', label: '— Pick a fee entry —' }, ...waiverLedgerOpts]} />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
+                  <Select label="Waiver Type" value={waiverForm.waiverType} onChange={e => setWaiverForm(f => ({ ...f, waiverType: e.target.value }))} options={WAIVER_TYPES} />
+                  {waiverForm.waiverType !== 'FULL' && (
+                    <Input label={waiverForm.waiverType === 'PARTIAL_AMOUNT' ? 'Amount (₹)' : 'Percentage (%)'} value={waiverForm.amountOrPercent} onChange={e => setWaiverForm(f => ({ ...f, amountOrPercent: e.target.value }))} />
+                  )}
+                  <div style={{ gridColumn: '1/-1' }}>
+                    <Select label="Reason" value={waiverForm.reason} onChange={e => setWaiverForm(f => ({ ...f, reason: e.target.value }))} options={WAIVER_REASONS.map(r => ({ value: r, label: r }))} />
+                  </div>
+                </div>
+                <div style={{ marginTop: 12, padding: '10px 12px', background: '#FFFBF0', border: '1px solid #F5E6BE', borderRadius: 8, fontSize: 13, color: '#92400E' }}>
+                  Student will be notified instantly when waiver is applied.
+                </div>
+                <Btn style={{ marginTop: 16 }} onClick={handleApplyWaiver}>Apply Waiver</Btn>
+              </>
+            )}
           </div>
         )}
 
         {tab === 'charge' && (
-          <div style={{ marginTop: 20, maxWidth: 500 }}>
-            <div style={{ display: 'grid', gap: 16 }}>
-              <Select label="Charge Type" value={chargeForm.feeTypeId ? 'library' : 'custom'}
-                onChange={e => setChargeForm(f => ({ ...f, feeTypeId: e.target.value === 'custom' ? '' : f.feeTypeId }))}
-                options={[{ value: 'library', label: 'From Fee Library' }, { value: 'custom', label: 'One-off Custom' }]} />
-              {chargeForm.feeTypeId !== '' ? (
-                <Select label="Fee Type" value={chargeForm.feeTypeId} onChange={e => setChargeForm(f => ({ ...f, feeTypeId: e.target.value }))}
-                  options={(feeTypes?.fees || []).map(f => ({ value: f.id, label: `${f.name} (₹${f.domesticAmount})` }))} />
-              ) : (
-                <>
-                  <Input label="Charge Name" value={chargeForm.name} onChange={e => setChargeForm(f => ({ ...f, name: e.target.value }))} />
-                  <Input label="Amount (₹)" type="number" value={chargeForm.amount} onChange={e => setChargeForm(f => ({ ...f, amount: e.target.value }))} />
-                </>
-              )}
-              <Select label="Apply to" value={chargeForm.scope} onChange={e => setChargeForm(f => ({ ...f, scope: e.target.value }))}
-                options={[{ value: 'all', label: 'All Students' }, { value: 'offline', label: 'Offline Only' }, { value: 'online', label: 'Online Only' }]} />
+          <div style={{ marginTop: 20, maxWidth: 560 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+              <Btn variant={chargeMode === 'bulk' ? 'primary' : 'outline'} size="sm" onClick={() => { setChargeMode('bulk'); setBulkPreview(null); }}>Bulk by Scope</Btn>
+              <Btn variant={chargeMode === 'single' ? 'primary' : 'outline'} size="sm" onClick={() => setChargeMode('single')}>Charge One Student</Btn>
             </div>
-            {preview && (
-              <div style={{ margin: '16px 0', padding: '12px 16px', background: '#EEF4FA', borderRadius: 8 }}>
-                <div style={{ fontWeight: 600, color: '#0F2B4A' }}>Preview: {preview.count} students · Total ₹{Number(preview.total).toLocaleString()}</div>
-                <Btn style={{ marginTop: 12 }} onClick={handleApplyCharge}>Confirm & Apply</Btn>
+
+            {chargeMode === 'bulk' && (
+              <div style={{ display: 'grid', gap: 14 }}>
+                <Select label="Fee Type" value={bulkChargeForm.feeTypeId} onChange={e => { setBulkChargeForm(f => ({ ...f, feeTypeId: e.target.value })); setBulkPreview(null); }}
+                  options={[{ value: '', label: '— Pick a fee type —' }, ...feeTypeOpts]} />
+                <Select label="Apply to" value={bulkChargeForm.scope} onChange={e => { setBulkChargeForm(f => ({ ...f, scope: e.target.value })); setBulkPreview(null); }}
+                  options={[{ value: 'all', label: 'All Students' }, { value: 'offline', label: 'Offline Only' }, { value: 'online', label: 'Online Only' }]} />
+                {bulkPreview ? (
+                  <div style={{ padding: '12px 16px', background: '#EEF4FA', borderRadius: 8 }}>
+                    <div style={{ fontWeight: 600, color: '#0F2B4A' }}>Preview: {bulkPreview.count} student{bulkPreview.count === 1 ? '' : 's'} · Total ₹{Number(bulkPreview.total).toLocaleString()}</div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <Btn variant="outline" size="sm" onClick={() => setBulkPreview(null)}>Cancel</Btn>
+                      <Btn size="sm" onClick={handleApplyBulkCharge}>Confirm & Apply</Btn>
+                    </div>
+                  </div>
+                ) : (
+                  <Btn variant="outline" onClick={handlePreviewBulkCharge}>Preview Recipients</Btn>
+                )}
               </div>
             )}
-            {!preview && <Btn variant="outline" style={{ marginTop: 16 }} onClick={handlePreviewCharge}>Preview Recipients</Btn>}
+
+            {chargeMode === 'single' && (
+              <div style={{ display: 'grid', gap: 14 }}>
+                {chargeStudent
+                  ? <StudentChip s={chargeStudent} onClear={() => { setChargeStudent(null); setSingleChargeForm(f => ({ ...f, studentId: '' })); }} />
+                  : <Btn variant="outline" onClick={() => openPicker('single')}>Select Student</Btn>}
+                {chargeStudent && (
+                  <>
+                    <Select label="Fee Type" value={singleChargeForm.feeTypeId} onChange={e => setSingleChargeForm(f => ({ ...f, feeTypeId: e.target.value }))}
+                      options={[{ value: '', label: '— Pick a fee type —' }, ...feeTypeOpts]} />
+                    <Input label="Custom Amount (optional — leave blank to use fee type default)" type="number" value={singleChargeForm.customAmount} onChange={e => setSingleChargeForm(f => ({ ...f, customAmount: e.target.value }))} />
+                    <Input label="Custom Description (optional)" value={singleChargeForm.customDescription} onChange={e => setSingleChargeForm(f => ({ ...f, customDescription: e.target.value }))} />
+                    <Btn onClick={handleSingleCharge}>Apply Charge</Btn>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
       </Card>
+
+      {/* Student picker */}
+      {pickerOpen && (
+        <Modal title="Select Student" onClose={() => setPickerOpen(false)} wide>
+          <SearchInput value={pickerSearch} onChange={setPickerSearch} placeholder="Search by name, ID or email..." style={{ marginBottom: 12 }} />
+          <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid #DDE1E7', borderRadius: 8 }}>
+            {(pickerStudents?.users || []).filter(u => u.studentProfile).map(u => {
+              const sp = u.studentProfile;
+              return (
+                <div key={u.id} onClick={() => handlePickStudent(u)} style={{ padding: '10px 12px', borderBottom: '1px solid #EEF4FA', cursor: 'pointer' }}>
+                  <div style={{ fontWeight: 500 }}>{sp.firstName} {sp.lastName}</div>
+                  <div style={{ fontSize: 12, color: '#7B8494' }}>{u.userIdDisplay} · {u.email}{sp.programme?.name && ` · ${sp.programme.name}`}</div>
+                </div>
+              );
+            })}
+            {((pickerStudents?.users || []).filter(u => u.studentProfile).length === 0) && (
+              <div style={{ padding: 16, textAlign: 'center', color: '#7B8494', fontSize: 13 }}>
+                {pickerSearch ? 'No students match that search.' : 'Start typing to search students.'}
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
     </PageWrapper>
   );
 }

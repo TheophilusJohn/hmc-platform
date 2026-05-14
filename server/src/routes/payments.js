@@ -43,14 +43,15 @@ router.post('/offline', authenticate,
   requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER'),
   async (req, res, next) => {
     try {
-      const { studentId, ledgerId, amount, currency, mode, notes, exchangeRate } = req.body;
+      const { studentId, ledgerId, amount, mode, notes, exchangeRate } = req.body;
+      const currency = req.body.currency || 'INR';
 
       const receiptNo = await getNextReceiptNumber();
 
       const payment = await prisma.payment.create({
         data: {
           studentId,
-          ledgerId,
+          ...(ledgerId && { ledgerId }),
           amount,
           currency,
           mode,
@@ -150,6 +151,41 @@ router.post('/razorpay/verify', authenticate, requireRole('STUDENT'), async (req
 
     res.json({ payment, receiptNo });
   } catch (err) { next(err); }
+});
+
+
+// POST /api/payments/create-order - alias used by Student Fees page
+router.post('/create-order', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+  try {
+    const { amount, currency = 'INR' } = req.body;
+    const receiptNo = await getNextReceiptNumber();
+    const razorpay = getRazorpay();
+    const order = await razorpay.orders.create({
+      amount: Math.round(Number(amount) * 100),
+      currency,
+      receipt: receiptNo,
+      notes: { studentId: req.user.id },
+    });
+    res.json({ id: order.id, amount: order.amount, currency, receiptNo });
+  } catch (err) { console.error('create-order:', err); next(err); }
+});
+
+// POST /api/payments/installment-order - Razorpay order for a specific installment
+router.post('/installment-order', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+  try {
+    const { installmentId } = req.body;
+    const inst = await prisma.installmentPlan.findUnique({ where: { id: installmentId } });
+    if (!inst) return res.status(404).json({ error: 'Installment not found' });
+    const receiptNo = await getNextReceiptNumber();
+    const razorpay = getRazorpay();
+    const order = await razorpay.orders.create({
+      amount: Math.round(Number(inst.amount) * 100),
+      currency: 'INR',
+      receipt: receiptNo,
+      notes: { installmentId, studentId: req.user.id },
+    });
+    res.json({ id: order.id, amount: order.amount, currency: 'INR', receiptNo });
+  } catch (err) { console.error('installment-order:', err); next(err); }
 });
 
 module.exports = router;

@@ -22,11 +22,12 @@ export default function FacultyLayout() {
   const { user, logout } = useAuth();
   const { unreadCount } = useNotifications();
   const active = NAV.find(n => location.pathname === n.path || (n.path !== '/faculty' && location.pathname.startsWith(n.path)))?.id || 'dashboard';
+  const displayName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'Faculty Member';
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'DM Sans', sans-serif" }}>
       <Sidebar items={NAV} active={active} onSelect={id => navigate(NAV.find(n => n.id === id).path)}
-        user={{ name: `${user?.firstName} ${user?.lastName}`, role: 'Faculty', id: user?.userIdDisplay }}
+        user={{ name: displayName, role: 'Faculty', id: user?.userIdDisplay }}
         onLogout={logout} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <TopBar title={NAV.find(n => n.id === active)?.label || 'Faculty'} notifCount={unreadCount} />

@@ -11,10 +11,10 @@ const ROLES = [
 ];
 
 const PORTAL_ROUTES = {
-  ADMIN: '/admin',
+  FULL_ADMIN: '/admin',
   TEACHER_ADMIN: '/ta',
   FACULTY: '/faculty',
-  ADMISSIONS: '/admissions',
+  ADMISSIONS_OFFICER: '/admissions',
   STUDENT: '/student',
 };
 
@@ -32,14 +32,13 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedRole) { setError('Please select your role.'); return; }
     if (!email || !password) { setError('Email and password are required.'); return; }
     setLoading(true); setError('');
     try {
       const { data } = await api.post('/auth/login', { email, password });
       localStorage.setItem('hmc_token', data.token);
       localStorage.setItem('hmc_user', JSON.stringify(data.user));
-      if (data.force_change_password) { navigate('/change-password'); return; }
+      if (data.forcePasswordChange || data.force_change_password) { navigate('/change-password'); return; }
       navigate(PORTAL_ROUTES[data.user.role] || '/');
     } catch (err) {
       setError(err.response?.data?.message || 'Invalid credentials.');
@@ -101,7 +100,7 @@ export default function Login() {
       <div style={{ flex: 1, background: '#FDFBF7', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 32px' }}>
         <div style={{ width: '100%', maxWidth: 460 }}>
           <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, fontWeight: 700, color: '#0F2B4A', marginBottom: 6 }}>Sign In</h1>
-          <p style={{ color: '#7B8494', fontSize: 14, marginBottom: 28 }}>Select your role and enter your credentials.</p>
+          <p style={{ color: '#7B8494', fontSize: 14, marginBottom: 28 }}>Welcome back. Sign in to continue.</p>
 
           {/* Role cards */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 24 }}>
@@ -151,9 +150,7 @@ export default function Login() {
             <button onClick={() => setForgotOpen(true)} style={{ background: 'none', border: 'none', color: '#0F2B4A', fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>Forgot password?</button>
           </div>
 
-          <div style={{ marginTop: 24, padding: '12px 16px', background: '#EEF4FA', borderRadius: 8, fontSize: 12, color: '#5A6272' }}>
-            <strong>Demo:</strong> admin@hmc.edu / Admin@123 &nbsp;|&nbsp; james.mensah@student.hmc.edu / Welcome@123
-          </div>
+
         </div>
       </div>
 

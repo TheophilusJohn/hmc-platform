@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { StatCard, Card, Badge, Btn } from '../../components/common/index';
 import { useApi } from '../../hooks/useApi';
 import { formatCurrency } from '../../utils/currency';
-import { fromNow } from '../../utils/dates';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -12,7 +11,9 @@ export default function AdminDashboard() {
   const { data: financeSummary } = useApi('finance-summary', '/reports/financial/summary');
   const { data: atRisk } = useApi('at-risk', '/reports/at-risk');
 
-  const completion = completionData?.percent || 0;
+  const completion = completionData?.percentage || 0;
+  const pipelineCounts = Array.isArray(pipeline?.counts) ? pipeline.counts : [];
+  const atRiskList = Array.isArray(atRisk) ? atRisk : [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -27,23 +28,23 @@ export default function AdminDashboard() {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-        <StatCard icon="🎓" label="Active Students" value={atRisk?.length != null ? '—' : '—'} color="#0F2B4A" />
-        <StatCard icon="📋" label="In Pipeline" value={pipeline?.total_active || '—'} color="#C9920A" />
+        <StatCard icon="🎓" label="Active Students" value="—" color="#0F2B4A" />
+        <StatCard icon="📋" label="In Pipeline" value={pipeline?.total ?? '—'} color="#C9920A" />
         <StatCard icon="₹" label="INR Collected" value={financeSummary ? formatCurrency(financeSummary.collected?.inr) : '—'} color="#166534" />
         <StatCard icon="💲" label="USD Collected" value={financeSummary ? `$${Number(financeSummary.collected?.usd || 0).toLocaleString()}` : '—'} color="#0F766E" />
         <StatCard icon="⚠" label="Outstanding INR" value={financeSummary ? formatCurrency(financeSummary.outstanding?.inr) : '—'} color="#991B1B" />
-        <StatCard icon="🚨" label="At-Risk Students" value={atRisk?.length ?? '—'} color="#6D28D9" />
+        <StatCard icon="🚨" label="At-Risk Students" value={atRiskList.length} color="#6D28D9" />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
         <Card title="Admissions Pipeline">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {pipeline ? Object.entries(pipeline).filter(([k]) => k !== 'total_active').map(([stage, count]) => (
+            {pipelineCounts.length > 0 ? pipelineCounts.map(({ stage, count }) => (
               <div key={stage} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 13, fontFamily: 'DM Sans,sans-serif', color: '#3D4450', textTransform: 'capitalize' }}>{stage.replace(/_/g, ' ')}</span>
+                <span style={{ fontSize: 13, fontFamily: 'DM Sans,sans-serif', color: '#3D4450', textTransform: 'capitalize' }}>{String(stage).replace(/_/g, ' ').toLowerCase()}</span>
                 <Badge variant="navy">{count}</Badge>
               </div>
-            )) : <div style={{ color: '#7B8494', fontSize: 13 }}>Loading…</div>}
+            )) : <div style={{ color: '#7B8494', fontSize: 13 }}>No data yet</div>}
           </div>
         </Card>
 

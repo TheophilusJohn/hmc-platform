@@ -39,4 +39,12 @@ router.put('/read-all', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+
+router.post('/mark-all-read', authenticate, async (req, res, next) => {
+  try {
+    await prisma.notification.updateMany({ where: { userId: req.user.id }, data: { isRead: true } });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

@@ -22,7 +22,7 @@ export default function Pipeline() {
   const applicants = data?.applicants || [];
 
   const byStage = STAGES.reduce((acc, s) => {
-    acc[s.id] = applicants.filter(a => a.pipelineStage === s.id);
+    acc[s.id] = applicants.filter(a => String(a.pipelineStage || '').toLowerCase() === s.id);
     return acc;
   }, {});
 
@@ -56,7 +56,7 @@ export default function Pipeline() {
                   <div style={{ fontWeight: 600, fontSize: 13, color: '#1A1D23', marginBottom: 2 }}>{a.firstName} {a.lastName}</div>
                   <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 6 }}>{a.programmeName}</div>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    <Badge color={TYPE_COLORS[a.studentType] || 'gray'} style={{ fontSize: 10, padding: '1px 6px' }}>{a.studentType}</Badge>
+                    <Badge color={TYPE_COLORS[String(a.studentType || '').toLowerCase()] || 'gray'} style={{ fontSize: 10, padding: '1px 6px' }}>{a.studentType}</Badge>
                     {a.interviewDate && stage.id === 'interview_scheduled' && (
                       <Badge color="teal" style={{ fontSize: 10, padding: '1px 6px' }}>{new Date(a.interviewDate).toLocaleDateString('en-IN', { day:'numeric',month:'short' })}</Badge>
                     )}

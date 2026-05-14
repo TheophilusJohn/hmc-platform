@@ -1,34 +1,38 @@
+// server/src/routes/reports.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, facultyOrAbove } = require('../middleware/rbac');
 
-const getFilters = (query) => {
-  const { semesterId, batchId, programmeId, studentId, dateFrom, dateTo, studyMode } = query;
-  return { semesterId, batchId, programmeId, studentId, dateFrom, dateTo, studyMode };
-};
+// Helper: calculate CGPA from enrollments (no cgpa field exists on StudentProfile)
+function calculateCGPA(enrollments) {
+  const graded = enrollments.filter(e => e.cgpaPoints !== null && e.resultStatus === 'PASS');
+  if (graded.length === 0) return 0;
+  let totalPoints = 0, totalCredits = 0;
+  for (const e of graded) {
+    const credits = e.subject?.creditHours || 1;
+    totalPoints += (e.cgpaPoints || 0) * credits;
+    totalCredits += credits;
+  }
+  return totalCredits > 0 ? +(totalPoints / totalCredits).toFixed(2) : 0;
+}
 
 // GET /api/reports/academic/marksheet/:studentId
 router.get('/academic/marksheet/:studentId', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const enrollments = await prisma.studentSubjectEnrollment.findMany({
-      where: { student_id: req.params.studentId },
-      include: {
-        subject: { include: { semester: true, programme: true } },
-      },
-      orderBy: [{ subject: { semester: { academic_year: 'asc' } } }],
+      where: { studentId: req.params.studentId },
+      include: { subject: { include: { semester: true, programme: true } } },
+      orderBy: [{ subject: { semester: { academicYear: 'asc' } } }],
     });
 
-    // Group by semester
     const bySemester = {};
     for (const e of enrollments) {
-      const key = e.subject.semester_id;
+      const key = e.subject.semesterId;
       if (!bySemester[key]) bySemester[key] = { semester: e.subject.semester, subjects: [], sgpa: 0 };
       bySemester[key].subjects.push(e);
     }
-
     res.json(Object.values(bySemester));
   } catch (err) { next(err); }
 });
@@ -38,24 +42,22 @@ router.get('/academic/batch/:batchId', authenticate, facultyOrAbove, async (req,
   try {
     const { semesterId } = req.query;
     const subjects = await prisma.subject.findMany({
-      where: { batch_id: req.params.batchId, ...(semesterId ? { semester_id: semesterId } : {}) },
-      include: {
-        enrollments: { select: { total_marks: true, grade: true, result_status: true } },
-      },
+      where: { batchId: req.params.batchId, ...(semesterId ? { semesterId } : {}) },
+      include: { enrollments: { select: { totalMarks: true, grade: true, resultStatus: true } } },
     });
 
     const report = subjects.map(s => {
-      const marks = s.enrollments.map(e => e.total_marks).filter(Boolean);
+      const marks = s.enrollments.map(e => e.totalMarks).filter(v => v !== null);
       const avg = marks.length ? marks.reduce((a, b) => a + b, 0) / marks.length : 0;
-      const grades = s.enrollments.reduce((acc, e) => { acc[e.grade] = (acc[e.grade] || 0) + 1; return acc; }, {});
+      const grades = s.enrollments.reduce((acc, e) => { if (e.grade) acc[e.grade] = (acc[e.grade] || 0) + 1; return acc; }, {});
       return {
         subject: { id: s.id, name: s.name, code: s.code },
         students: s.enrollments.length,
         average: Math.round(avg * 10) / 10,
-        highest: Math.max(...marks, 0),
-        lowest: Math.min(...marks, 0),
-        pass_rate: s.enrollments.length ? Math.round((s.enrollments.filter(e => e.result_status === 'pass').length / s.enrollments.length) * 100) : 0,
-        grade_distribution: grades,
+        highest: marks.length ? Math.max(...marks) : 0,
+        lowest: marks.length ? Math.min(...marks) : 0,
+        passRate: s.enrollments.length ? Math.round((s.enrollments.filter(e => e.resultStatus === 'PASS').length / s.enrollments.length) * 100) : 0,
+        gradeDistribution: grades,
       };
     });
     res.json(report);
@@ -66,21 +68,33 @@ router.get('/academic/batch/:batchId', authenticate, facultyOrAbove, async (req,
 router.get('/academic/programme-progress/:programmeId', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const students = await prisma.user.findMany({
-      where: { role: 'student', status: 'active', student_profile: { programme_id: req.params.programmeId } },
+      where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { programmeId: req.params.programmeId } },
       include: {
-        student_profile: { select: { first_name: true, last_name: true, cgpa: true } },
-        enrollments: { select: { result_status: true, grade: true } },
+        studentProfile: {
+          select: {
+            id: true, firstName: true, lastName: true,
+            enrollments: { include: { subject: { select: { creditHours: true } } } },
+          }
+        },
       },
     });
 
     const atRiskThreshold = 5.0;
-    const onTrack = students.filter(s => (s.student_profile?.cgpa || 0) >= atRiskThreshold);
-    const atRisk = students.filter(s => (s.student_profile?.cgpa || 0) < atRiskThreshold);
+    const studentData = students.map(s => {
+      const cgpa = calculateCGPA(s.studentProfile?.enrollments || []);
+      const arrears = (s.studentProfile?.enrollments || []).filter(e => e.resultStatus === 'FAIL').length;
+      return {
+        id: s.id, name: `${s.studentProfile?.firstName || ''} ${s.studentProfile?.lastName || ''}`.trim(),
+        cgpa, arrears, status: cgpa >= atRiskThreshold ? 'on_track' : 'at_risk',
+      };
+    });
 
-    res.json({ total: students.length, on_track: onTrack.length, at_risk: atRisk.length, students: students.map(s => ({
-      id: s.id, name: `${s.student_profile?.first_name} ${s.student_profile?.last_name}`, cgpa: s.student_profile?.cgpa || 0,
-      arrears: s.enrollments.filter(e => e.result_status === 'fail').length, status: (s.student_profile?.cgpa || 0) >= atRiskThreshold ? 'on_track' : 'at_risk',
-    })) });
+    res.json({
+      total: students.length,
+      onTrack: studentData.filter(s => s.status === 'on_track').length,
+      atRisk: studentData.filter(s => s.status === 'at_risk').length,
+      students: studentData,
+    });
   } catch (err) { next(err); }
 });
 
@@ -93,7 +107,7 @@ router.get('/financial/summary', authenticate, adminOnly, async (req, res, next)
     if (dateTo) dateFilter.lte = new Date(dateTo);
 
     const payments = await prisma.payment.findMany({
-      where: { status: 'completed', ...(Object.keys(dateFilter).length ? { paid_at: dateFilter } : {}) },
+      where: { status: 'confirmed', ...(Object.keys(dateFilter).length ? { paidAt: dateFilter } : {}) },
     });
 
     const inr = payments.filter(p => p.currency === 'INR');
@@ -101,19 +115,19 @@ router.get('/financial/summary', authenticate, adminOnly, async (req, res, next)
     const totalINR = inr.reduce((sum, p) => sum + Number(p.amount), 0);
     const totalUSD = usd.reduce((sum, p) => sum + Number(p.amount), 0);
 
-    const outstanding = await prisma.studentFeeLedger.aggregate({
+    const outstandingINR = await prisma.studentFeeLedger.aggregate({
       _sum: { balance: true },
-      where: { status: { in: ['unpaid', 'partial'] }, currency: 'INR' },
+      where: { status: { in: ['UNPAID', 'PARTIAL'] }, currency: 'INR' },
     });
     const outstandingUSD = await prisma.studentFeeLedger.aggregate({
       _sum: { balance: true },
-      where: { status: { in: ['unpaid', 'partial'] }, currency: 'USD' },
+      where: { status: { in: ['UNPAID', 'PARTIAL'] }, currency: 'USD' },
     });
 
     res.json({
       collected: { inr: totalINR, usd: totalUSD },
-      outstanding: { inr: outstanding._sum.balance || 0, usd: outstandingUSD._sum.balance || 0 },
-      payment_count: payments.length,
+      outstanding: { inr: Number(outstandingINR._sum.balance || 0), usd: Number(outstandingUSD._sum.balance || 0) },
+      paymentCount: payments.length,
     });
   } catch (err) { next(err); }
 });
@@ -122,9 +136,9 @@ router.get('/financial/summary', authenticate, adminOnly, async (req, res, next)
 router.get('/financial/outstanding', authenticate, adminOnly, async (req, res, next) => {
   try {
     const students = await prisma.studentFeeLedger.groupBy({
-      by: ['student_id'],
+      by: ['studentId'],
       _sum: { balance: true },
-      where: { status: { in: ['unpaid', 'partial'] } },
+      where: { status: { in: ['UNPAID', 'PARTIAL'] } },
       orderBy: { _sum: { balance: 'desc' } },
     });
     res.json(students);
@@ -134,10 +148,10 @@ router.get('/financial/outstanding', authenticate, adminOnly, async (req, res, n
 // GET /api/reports/admissions/pipeline
 router.get('/admissions/pipeline', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const stages = ['received', 'docs_review', 'interview_scheduled', 'interview_done', 'waitlisted', 'accepted', 'enrolled', 'rejected'];
+    const stages = ['RECEIVED', 'DOCS_REVIEW', 'INTERVIEW_SCHEDULED', 'INTERVIEW_DONE', 'WAITLISTED', 'ACCEPTED', 'ENROLLED', 'REJECTED'];
     const counts = await Promise.all(stages.map(async s => ({
       stage: s,
-      count: await prisma.applicant.count({ where: { pipeline_stage: s } }),
+      count: await prisma.applicant.count({ where: { pipelineStage: s } }),
     })));
     res.json(counts);
   } catch (err) { next(err); }
@@ -146,16 +160,15 @@ router.get('/admissions/pipeline', authenticate, adminOnly, async (req, res, nex
 // GET /api/reports/attendance/below-threshold
 router.get('/attendance/below-threshold', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    const threshold = 75; // configurable
-    // Get all student-subject pairs with < threshold attendance
+    const threshold = 75;
     const flagged = await prisma.$queryRaw`
-      SELECT a.student_id, a.subject_id,
-        COUNT(*) as total,
-        SUM(CASE WHEN a.status IN ('present','late') THEN 1 ELSE 0 END) as present,
-        ROUND(SUM(CASE WHEN a.status IN ('present','late') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as percentage
-      FROM attendance a
-      GROUP BY a.student_id, a.subject_id
-      HAVING ROUND(SUM(CASE WHEN a.status IN ('present','late') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) < ${threshold}
+      SELECT a."studentId", a."subjectId",
+        COUNT(*)::int as total,
+        SUM(CASE WHEN a.status IN ('PRESENT','LATE') THEN 1 ELSE 0 END)::int as present,
+        ROUND(SUM(CASE WHEN a.status IN ('PRESENT','LATE') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as percentage
+      FROM "Attendance" a
+      GROUP BY a."studentId", a."subjectId"
+      HAVING ROUND(SUM(CASE WHEN a.status IN ('PRESENT','LATE') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) < ${threshold}
     `;
     res.json(flagged);
   } catch (err) { next(err); }
@@ -165,19 +178,29 @@ router.get('/attendance/below-threshold', authenticate, facultyOrAbove, async (r
 router.get('/at-risk', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const students = await prisma.user.findMany({
-      where: { role: 'student', status: 'active' },
+      where: { role: 'STUDENT', status: 'ACTIVE' },
       include: {
-        student_profile: { select: { first_name: true, last_name: true, cgpa: true } },
+        studentProfile: {
+          select: {
+            firstName: true, lastName: true,
+            enrollments: { include: { subject: { select: { creditHours: true } } } },
+          }
+        },
       },
     });
 
-    const atRisk = students.filter(s => (s.student_profile?.cgpa || 0) < 5.0);
-    res.json(atRisk.map(s => ({
-      id: s.id, user_id_display: s.user_id_display,
-      name: `${s.student_profile?.first_name} ${s.student_profile?.last_name}`,
-      cgpa: s.student_profile?.cgpa || 0,
-      flags: ['low_cgpa'],
-    })));
+    const atRisk = students
+      .map(s => {
+        const cgpa = calculateCGPA(s.studentProfile?.enrollments || []);
+        return {
+          id: s.id, userIdDisplay: s.userIdDisplay,
+          name: `${s.studentProfile?.firstName || ''} ${s.studentProfile?.lastName || ''}`.trim(),
+          cgpa, flags: ['low_cgpa'],
+        };
+      })
+      .filter(s => s.cgpa < 5.0);
+
+    res.json(atRisk);
   } catch (err) { next(err); }
 });
 

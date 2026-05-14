@@ -1,102 +1,144 @@
+// server/src/routes/references.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const crypto = require('crypto');
 const { authenticate } = require('../middleware/auth');
 const emailService = require('../services/email.service');
 
-// GET /api/references/applicant/:id
 router.get('/applicant/:id', authenticate, async (req, res, next) => {
   try {
-    const refs = await prisma.reference.findMany({ where: { applicant_id: req.params.id } });
+    const refs = await prisma.applicantReference.findMany({ where: { applicantId: req.params.id } });
     res.json(refs);
   } catch (err) { next(err); }
 });
 
-// POST /api/references/send
 router.post('/send', authenticate, async (req, res, next) => {
   try {
-    const { applicant_id, ref_type, referee_name, referee_email, referee_phone } = req.body;
+    const { applicantId, refType, refereeName, refereeEmail, refereePhone } = req.body;
     const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+    const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
-    const ref = await prisma.reference.upsert({
-      where: { applicant_id_ref_type: { applicant_id, ref_type } },
-      create: { applicant_id, ref_type, referee_name, referee_email, referee_phone, token, token_expires_at: expires, status: 'pending' },
-      update: { referee_name, referee_email, referee_phone, token, token_expires_at: expires, status: 'pending' },
+    const existing = await prisma.applicantReference.findFirst({
+      where: { applicantId, refType },
     });
+
+    const ref = existing
+      ? await prisma.applicantReference.update({
+          where: { id: existing.id },
+          data: { refereeName, refereeEmail, refereePhone, token, tokenExpiresAt: expires, status: 'PENDING' },
+        })
+      : await prisma.applicantReference.create({
+          data: { applicantId, refType, refereeName, refereeEmail, refereePhone, token, tokenExpiresAt: expires, status: 'PENDING' },
+        });
 
     const applicant = await prisma.applicant.findUnique({
-      where: { id: applicant_id }, select: { id: true, first_name: true, last_name: true, programme: { select: { name: true } } },
+      where: { id: applicantId },
+      include: { programme: { select: { name: true } } },
     });
+    const formData = applicant?.formData || {};
+    const applicantName = `${formData.firstName || ''} ${formData.lastName || ''}`.trim();
 
     const referenceLink = `${process.env.CLIENT_URL}/references/${token}`;
-    await emailService.sendReferenceRequest({ referee_name, referee_email, applicantName: `${applicant.first_name} ${applicant.last_name}`, programme: applicant.programme?.name, referenceLink, ref_type });
+    try {
+      await emailService.sendReferenceRequest({
+        refereeName, refereeEmail,
+        applicantName, programme: applicant?.programme?.name,
+        referenceLink, refType,
+      });
+    } catch (_e) {}
 
     res.json(ref);
   } catch (err) { next(err); }
 });
 
-// PUT /api/references/:token/submit — PUBLIC (no auth)
 router.put('/:token/submit', async (req, res, next) => {
   try {
-    const ref = await prisma.reference.findUnique({ where: { token: req.params.token } });
+    const ref = await prisma.applicantReference.findUnique({ where: { token: req.params.token } });
     if (!ref) return res.status(404).json({ error: 'Invalid reference link.' });
-    if (ref.status === 'received') return res.status(400).json({ error: 'Reference already submitted.' });
-    if (ref.token_expires_at < new Date()) return res.status(400).json({ error: 'This reference link has expired. Please ask the applicant to resend.' });
+    if (ref.status === 'RECEIVED') return res.status(400).json({ error: 'Reference already submitted.' });
+    if (ref.tokenExpiresAt < new Date()) return res.status(400).json({ error: 'This reference link has expired.' });
 
-    const updated = await prisma.reference.update({
+    await prisma.applicantReference.update({
       where: { token: req.params.token },
-      data: { response: req.body, submitted_at: new Date(), status: 'received' },
+      data: { response: req.body, submittedAt: new Date(), status: 'RECEIVED' },
     });
     res.json({ success: true, message: 'Thank you for submitting your reference.' });
   } catch (err) { next(err); }
 });
 
-// POST /api/references/:id/resend
 router.post('/:id/resend', authenticate, async (req, res, next) => {
   try {
-    const ref = await prisma.reference.findUnique({ where: { id: req.params.id } });
+    const ref = await prisma.applicantReference.findUnique({ where: { id: req.params.id } });
+    if (!ref) return res.status(404).json({ error: 'Reference not found' });
+
     const newToken = crypto.randomBytes(32).toString('hex');
     const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
-    const updated = await prisma.reference.update({
+    const updated = await prisma.applicantReference.update({
       where: { id: req.params.id },
-      data: { token: newToken, token_expires_at: expires, status: 'pending' },
+      data: { token: newToken, tokenExpiresAt: expires, status: 'PENDING' },
     });
 
     const referenceLink = `${process.env.CLIENT_URL}/references/${newToken}`;
-    await emailService.sendReferenceRequest({ referee_name: ref.referee_name, referee_email: ref.referee_email, referenceLink, ref_type: ref.ref_type });
+    try {
+      await emailService.sendReferenceRequest({
+        refereeName: ref.refereeName,
+        refereeEmail: ref.refereeEmail,
+        referenceLink,
+        refType: ref.refType,
+      });
+    } catch (_e) {}
 
     res.json(updated);
   } catch (err) { next(err); }
 });
 
-// GET /api/references/pending
 router.get('/pending', authenticate, async (req, res, next) => {
   try {
-    const pending = await prisma.reference.findMany({
-      where: { status: { in: ['pending', 'expired'] } },
-      include: { applicant: { select: { first_name: true, last_name: true, application_no: true } } },
-      orderBy: { token_expires_at: 'asc' },
+    const pending = await prisma.applicantReference.findMany({
+      where: { status: { in: ['PENDING', 'EXPIRED'] } },
+      include: { applicant: { select: { applicationNo: true, formData: true } } },
+      orderBy: { tokenExpiresAt: 'asc' },
     });
-    res.json(pending);
+    const flat = pending.map(r => {
+      const fd = r.applicant?.formData || {};
+      const name = `${fd.firstName || ''} ${fd.lastName || ''}`.trim();
+      return {
+        id: r.id,
+        applicantName: name || r.applicant?.applicationNo || '—',
+        refereeName: r.refereeName,
+        refereeEmail: r.refereeEmail,
+        refereePhone: r.refereePhone,
+        refType: String(r.refType || '').toLowerCase(),
+        status: String(r.status || '').toLowerCase(),
+        tokenExpiresAt: r.tokenExpiresAt,
+      };
+    });
+    res.json({ references: flat });
   } catch (err) { next(err); }
 });
 
-// GET /api/references/:token — public — get form details for referee
 router.get('/:token', async (req, res, next) => {
   try {
-    const ref = await prisma.reference.findUnique({ where: { token: req.params.token } });
+    const ref = await prisma.applicantReference.findUnique({ where: { token: req.params.token } });
     if (!ref) return res.status(404).json({ error: 'Invalid link.' });
-    if (ref.token_expires_at < new Date()) return res.status(400).json({ error: 'This link has expired.' });
+    if (ref.tokenExpiresAt < new Date()) return res.status(400).json({ error: 'This link has expired.' });
 
     const applicant = await prisma.applicant.findUnique({
-      where: { id: ref.applicant_id },
-      select: { first_name: true, last_name: true, programme: { select: { name: true } } },
+      where: { id: ref.applicantId },
+      include: { programme: { select: { name: true } } },
     });
-    res.json({ ref: { id: ref.id, ref_type: ref.ref_type, status: ref.status }, applicant });
+    const formData = applicant?.formData || {};
+
+    res.json({
+      ref: { id: ref.id, refType: ref.refType, status: ref.status },
+      applicant: {
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+        programme: applicant?.programme,
+      },
+    });
   } catch (err) { next(err); }
 });
 

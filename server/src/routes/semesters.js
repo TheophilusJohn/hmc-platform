@@ -1,16 +1,15 @@
+// server/src/routes/semesters.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOrTA, adminOnly } = require('../middleware/rbac');
 
-// GET /api/semesters
 router.get('/', authenticate, async (req, res, next) => {
   try {
-    const { batchId, status, programmeId } = req.query;
+    const { batchId, status } = req.query;
     const where = {};
-    if (batchId) where.batch_id = batchId;
+    if (batchId) where.batchId = batchId;
     if (status) where.status = status;
 
     const semesters = await prisma.semester.findMany({
@@ -19,71 +18,96 @@ router.get('/', authenticate, async (req, res, next) => {
         batch: { include: { programme: true } },
         subjects: { select: { id: true, name: true, code: true } },
       },
-      orderBy: [{ academic_year: 'desc' }, { type: 'asc' }],
+      orderBy: [{ academicYear: 'desc' }, { type: 'asc' }],
     });
     res.json(semesters);
   } catch (err) { next(err); }
 });
 
-// POST /api/semesters
 router.post('/', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const { name, type, academic_year, start_date, end_date, marks_deadline, batch_id } = req.body;
+    const { name, type, academicYear, startDate, endDate, marksDeadline, batchId } = req.body;
     const semester = await prisma.semester.create({
-      data: { name, type, academic_year, start_date: new Date(start_date), end_date: new Date(end_date), marks_deadline: marks_deadline ? new Date(marks_deadline) : null, batch_id, status: 'draft' },
+      data: {
+        name, type, academicYear,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        marksDeadline: marksDeadline ? new Date(marksDeadline) : null,
+        batchId,
+        status: 'DRAFT',
+      },
     });
     res.status(201).json(semester);
   } catch (err) { next(err); }
 });
 
-// PUT /api/semesters/:id
 router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const { name, start_date, end_date, marks_deadline, status } = req.body;
+    const { name, startDate, endDate, marksDeadline, status } = req.body;
     const semester = await prisma.semester.update({
       where: { id: req.params.id },
-      data: { name, start_date: start_date ? new Date(start_date) : undefined, end_date: end_date ? new Date(end_date) : undefined, marks_deadline: marks_deadline ? new Date(marks_deadline) : undefined, status },
+      data: {
+        name,
+        startDate: startDate ? new Date(startDate) : undefined,
+        endDate: endDate ? new Date(endDate) : undefined,
+        marksDeadline: marksDeadline ? new Date(marksDeadline) : undefined,
+        status,
+      },
     });
     res.json(semester);
   } catch (err) { next(err); }
 });
 
-// POST /api/semesters/:id/activate
 router.post('/:id/activate', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const semester = await prisma.semester.update({ where: { id: req.params.id }, data: { status: 'active' } });
+    const semester = await prisma.semester.update({ where: { id: req.params.id }, data: { status: 'ACTIVE' } });
     res.json(semester);
   } catch (err) { next(err); }
 });
 
-// POST /api/semesters/:id/archive
 router.post('/:id/archive', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const semester = await prisma.semester.update({ where: { id: req.params.id }, data: { status: 'archived' } });
+    const semester = await prisma.semester.update({ where: { id: req.params.id }, data: { status: 'ARCHIVED' } });
     res.json(semester);
   } catch (err) { next(err); }
 });
 
-// POST /api/semesters/:id/copy-setup
 router.post('/:id/copy-setup', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { sourceId } = req.body;
-    const sourceSubjects = await prisma.subject.findMany({ where: { semester_id: sourceId } });
-    const semester = await prisma.semester.findUnique({ where: { id: req.params.id } });
+    const sourceSubjects = await prisma.subject.findMany({ where: { semesterId: sourceId } });
 
     const created = await Promise.all(sourceSubjects.map(s =>
       prisma.subject.create({
         data: {
-          name: s.name, code: s.code, credit_hours: s.credit_hours, type: s.type,
-          ese_marks: s.ese_marks, ia_marks: s.ia_marks, total_marks: s.total_marks,
-          pass_mark: s.pass_mark, exam_mode: s.exam_mode,
-          programme_id: s.programme_id, batch_id: s.batch_id,
-          semester_id: req.params.id, status: 'draft',
+          name: s.name, code: s.code, creditHours: s.creditHours, type: s.type,
+          eseMarks: s.eseMarks, iaMarks: s.iaMarks, totalMarks: s.totalMarks,
+          passMark: s.passMark, examMode: s.examMode,
+          programmeId: s.programmeId, batchId: s.batchId,
+          semesterId: req.params.id, status: 'active',
         },
       })
     ));
     res.json({ copied: created.length, subjects: created });
   } catch (err) { next(err); }
+});
+
+
+router.delete('/:id', authenticate, adminOnly, async (req, res, next) => {
+  try {
+    const sem = await prisma.semester.findUnique({ where: { id: req.params.id } });
+    if (!sem) return res.status(404).json({ error: 'Semester not found' });
+    if (sem.status === 'ACTIVE' || sem.status === 'EXAM') {
+      return res.status(400).json({ error: 'Cannot delete an active/exam semester. Archive it first.' });
+    }
+    await prisma.semester.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'P2003' || err.code === 'P2014') {
+      return res.status(400).json({ error: 'Cannot delete: semester has subjects, exams, or enrollments.' });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

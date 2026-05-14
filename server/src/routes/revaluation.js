@@ -1,113 +1,131 @@
+// server/src/routes/revaluation.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
-const { adminOrTA } = require('../middleware/rbac');
+const { adminOrTA, requireRole } = require('../middleware/rbac');
 const notif = require('../services/notification.service');
 
-// POST /api/revaluation/request
-router.post('/request', authenticate, async (req, res, next) => {
+router.post('/request', authenticate, requireRole('STUDENT'), async (req, res, next) => {
   try {
-    const { enrollment_id, reason } = req.body;
-    if (req.user.role !== 'student') return res.status(403).json({ error: 'Students only' });
+    const { subjectId, semesterId, reason, originalMarks } = req.body;
+    const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id } });
+    if (!sp) return res.status(404).json({ error: 'Student profile not found' });
 
-    // Check revaluation fee paid (look up setting)
     const feeSetting = await prisma.systemSetting.findUnique({ where: { key: 'revaluation_fee' } });
     const feeAmount = feeSetting?.value?.amount || 0;
 
     if (feeAmount > 0) {
-      // Check payment exists
       const paid = await prisma.payment.findFirst({
-        where: { student_id: req.user.id, notes: { contains: `revaluation:${enrollment_id}` } },
+        where: { studentId: sp.id, notes: { contains: `revaluation:${subjectId}` } },
       });
       if (!paid) return res.status(402).json({ error: 'Revaluation fee must be paid before submitting request.' });
     }
 
-    const enrollment = await prisma.studentSubjectEnrollment.findUnique({
-      where: { id: enrollment_id }, include: { subject: true },
-    });
+    const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
 
     const rev = await prisma.revaluation.create({
-      data: { enrollment_id, student_id: req.user.id, subject_id: enrollment.subject_id, reason, status: 'pending' },
+      data: {
+        studentId: sp.id,
+        subjectId,
+        semesterId,
+        notes: reason,
+        originalMarks,
+        status: 'pending',
+      },
     });
 
-    // Notify TA/Admin
-    await notif.createNotification(null, 'revaluation_request', 'Revaluation Request', `Student ${req.user.user_id_display} requested revaluation for ${enrollment.subject.name}`, `/ta/exceptions`);
+    const admins = await prisma.user.findMany({ where: { role: { in: ['FULL_ADMIN', 'TEACHER_ADMIN'] }, status: 'ACTIVE' } });
+    for (const admin of admins) {
+      await notif.createNotification(admin.id, 'revaluation_request', 'Revaluation Request',
+        `Student ${req.user.userIdDisplay} requested revaluation for ${subject?.name || 'a subject'}`, '/ta/exceptions');
+    }
     res.status(201).json(rev);
   } catch (err) { next(err); }
 });
 
-// GET /api/revaluation — TA/Admin views pending
 router.get('/', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const revs = await prisma.revaluation.findMany({
       include: {
-        student: { include: { student_profile: { select: { first_name: true, last_name: true } } } },
-        subject: { select: { name: true, code: true } },
-        enrollment: { select: { ese_marks: true, ia_marks: true, total_marks: true, grade: true } },
+        student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } },
       },
-      orderBy: { created_at: 'desc' },
+      orderBy: { requestedAt: 'desc' },
     });
-    res.json(revs);
+
+    const enriched = await Promise.all(revs.map(async r => {
+      const subject = await prisma.subject.findUnique({ where: { id: r.subjectId }, select: { name: true, code: true } });
+      return { ...r, subject };
+    }));
+
+    res.json(enriched);
   } catch (err) { next(err); }
 });
 
-// PUT /api/revaluation/:id/approve
 router.put('/:id/approve', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const rev = await prisma.revaluation.update({
       where: { id: req.params.id },
-      data: { status: 'approved', approved_by: req.user.id, approved_at: new Date() },
-      include: { subject: true },
+      data: { status: 'approved', taApprovedBy: req.user.id, taApprovedAt: new Date() },
     });
-    // Notify faculty
-    const faculty = await prisma.subject.findUnique({ where: { id: rev.subject_id }, select: { faculty_id: true } });
-    if (faculty?.faculty_id) {
-      await notif.createNotification(faculty.faculty_id, 'revaluation_assigned', 'Revaluation Assigned', `Please re-grade revaluation for subject ${rev.subject.name}`, `/faculty/exams`);
+
+    const subject = await prisma.subject.findUnique({ where: { id: rev.subjectId }, select: { facultyId: true, name: true } });
+    if (subject?.facultyId) {
+      const fp = await prisma.facultyProfile.findUnique({ where: { id: subject.facultyId }, include: { user: true } });
+      if (fp?.user) {
+        await notif.createNotification(fp.user.id, 'revaluation_assigned', 'Revaluation Assigned',
+          `Please re-grade revaluation for ${subject.name}`, '/faculty/exams');
+      }
     }
     res.json(rev);
   } catch (err) { next(err); }
 });
 
-// PUT /api/revaluation/:id/faculty-grade
 router.put('/:id/faculty-grade', authenticate, async (req, res, next) => {
   try {
-    const { new_ese_marks, new_ia_marks, faculty_remarks } = req.body;
+    const { newMarks, notes } = req.body;
     const rev = await prisma.revaluation.update({
       where: { id: req.params.id },
-      data: { new_ese_marks, new_ia_marks, faculty_remarks, status: 'faculty_graded', graded_at: new Date() },
+      data: { newMarks, notes, status: 'faculty_grading', facultyGradedAt: new Date() },
     });
     res.json(rev);
   } catch (err) { next(err); }
 });
 
-// PUT /api/revaluation/:id/confirm
 router.put('/:id/confirm', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const rev = await prisma.revaluation.update({
       where: { id: req.params.id },
-      data: { status: 'confirmed', confirmed_by: req.user.id, confirmed_at: new Date() },
-      include: { enrollment: true, student: true, subject: true },
+      data: { status: 'confirmed', confirmedBy: req.user.id, confirmedAt: new Date() },
+      include: { student: { include: { user: true } } },
     });
 
-    // Update enrollment
-    if (rev.new_ese_marks !== null || rev.new_ia_marks !== null) {
-      const ese = rev.new_ese_marks ?? rev.enrollment.ese_marks;
-      const ia = rev.new_ia_marks ?? rev.enrollment.ia_marks;
-      const total = ese + ia;
-      const { percentToGrade, cgpaPoints } = require('../utils/cgpa');
-      const subject = await prisma.subject.findUnique({ where: { id: rev.subject_id } });
-      const pct = (total / subject.total_marks) * 100;
-      const grade = percentToGrade(pct);
-
-      await prisma.studentSubjectEnrollment.update({
-        where: { id: rev.enrollment_id },
-        data: { ese_marks: ese, ia_marks: ia, total_marks: total, grade, result_status: grade === 'F' ? 'fail' : 'pass' },
+    if (rev.newMarks !== null && rev.newMarks !== undefined) {
+      const enrollment = await prisma.studentSubjectEnrollment.findFirst({
+        where: { studentId: rev.studentId, subjectId: rev.subjectId, semesterId: rev.semesterId },
       });
+      if (enrollment) {
+        const subject = await prisma.subject.findUnique({ where: { id: rev.subjectId } });
+        const pct = (rev.newMarks / (subject?.totalMarks || 100)) * 100;
+        const { percentToGrade } = require('../utils/cgpa');
+        const grade = percentToGrade(pct);
+
+        await prisma.studentSubjectEnrollment.update({
+          where: { id: enrollment.id },
+          data: {
+            totalMarks: rev.newMarks,
+            grade,
+            resultStatus: grade === 'F' ? 'FAIL' : 'PASS',
+          },
+        });
+      }
     }
 
-    await notif.createNotification(rev.student_id, 'revaluation_result', 'Revaluation Complete', `Your revaluation for ${rev.subject.name} has been processed.`, `/student/marksheet`);
+    const subject = await prisma.subject.findUnique({ where: { id: rev.subjectId }, select: { name: true } });
+    if (rev.student?.user) {
+      await notif.createNotification(rev.student.user.id, 'revaluation_result', 'Revaluation Complete',
+        `Your revaluation for ${subject?.name || 'a subject'} has been processed.`, '/student/marksheet');
+    }
     res.json(rev);
   } catch (err) { next(err); }
 });

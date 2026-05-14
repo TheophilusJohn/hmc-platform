@@ -35,7 +35,7 @@ export default function CourseContent() {
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this content item?')) return;
-    await api.delete(`/content/${id}`);
+    await api.delete(`/subjects/${selectedSubject}/content/${id}`);
     refetch();
   };
 

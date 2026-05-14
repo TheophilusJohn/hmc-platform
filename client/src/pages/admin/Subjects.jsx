@@ -3,11 +3,21 @@ import { PageWrapper, Card, Btn, Badge, Table, SearchInput, Modal, Input, Select
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
+const getVal = (v) => (v && typeof v === 'object' && 'target' in v) ? v.target.value : v;
+const EMPTY = {
+  name: '', code: '', creditHours: 3,
+  semesterId: '', batchId: '', facultyId: '',
+  eseMarks: 70, iaMarks: 30, passmark: 40,
+  examMode: 'OFFLINE', type: 'CORE',
+};
+
 export default function Subjects() {
   const [search, setSearch] = useState('');
   const [semFilter, setSemFilter] = useState('');
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', code: '', creditHours: 3, semesterId: '', batchId: '', facultyId: '', eseMarks: 70, iaMarks: 30, passmark: 40, examMode: 'offline', type: 'core' });
+  const [editOpen, setEditOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [editForm, setEditForm] = useState({ id: '', ...EMPTY });
 
   const { data, refetch } = useApi(`/subjects?search=${search}&semesterId=${semFilter}`);
   const { data: semesters } = useApi('/semesters');
@@ -15,23 +25,114 @@ export default function Subjects() {
   const { data: batches } = useApi('/programmes');
 
   const subjects = data?.subjects || [];
-  const allBatches = (batches?.programmes || []).flatMap(p => (p.batches || []).map(b => ({ value: b.id, label: `${p.name} – ${b.name}` })));
+  const allBatches = (batches?.programmes || []).flatMap(p =>
+    (p.batches || []).map(b => ({ value: b.id, label: `${p.name} – ${b.name}` }))
+  );
+  const facultyOptions = (faculty?.users || []).map(u => {
+    const fn = u.firstName || u.facultyProfile?.firstName || '';
+    const ln = u.lastName || u.facultyProfile?.lastName || '';
+    return { value: u.facultyProfile?.id || u.id, label: [fn, ln].filter(Boolean).join(' ') || u.email || u.userIdDisplay };
+  });
+
+  const setField = (k, target = setForm) => (v) => target(f => ({ ...f, [k]: getVal(v) }));
 
   const handleCreate = async () => {
-    await api.post('/subjects', form);
-    setOpen(false); refetch();
+    if (!form.name || !form.code || !form.semesterId || !form.batchId) {
+      alert('Please fill: Subject Name, Code, Semester, and Batch.');
+      return;
+    }
+    try {
+      await api.post('/subjects', form);
+      setOpen(false); setForm(EMPTY); refetch();
+    } catch (err) {
+      alert('Failed: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  const handleEdit = (row) => {
+    setEditForm({
+      id: row.id,
+      name: row.name || '',
+      code: row.code || '',
+      creditHours: row.creditHours || 3,
+      semesterId: row.semesterId || row.semester?.id || '',
+      batchId: row.batchId || row.batch?.id || '',
+      facultyId: row.facultyId || row.faculty?.id || '',
+      eseMarks: row.eseMarks || 70,
+      iaMarks: row.iaMarks || 30,
+      passmark: row.passMark || row.passmark || 40,
+      examMode: row.examMode || 'OFFLINE',
+      type: row.type || 'CORE',
+    });
+    setEditOpen(true);
+  };
+
+  const handleSaveEdit = async () => {
+    try {
+      const { id, ...payload } = editForm;
+      await api.put(`/subjects/${id}`, payload);
+      setEditOpen(false); refetch();
+    } catch (err) { alert('Save failed: ' + (err.response?.data?.error || err.message)); }
+  };
+
+  const handleArchive = async (id) => {
+    if (!confirm('Archive this subject?')) return;
+    try { await api.post(`/subjects/${id}/archive`); refetch(); }
+    catch (err) { alert('Archive failed: ' + (err.response?.data?.error || err.message)); }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Permanently delete this subject? Cannot be undone. Use Archive instead if any data exists.')) return;
+    try { await api.delete(`/subjects/${id}`); refetch(); }
+    catch (err) { alert('Delete failed: ' + (err.response?.data?.error || err.message)); }
   };
 
   const cols = [
     { key: 'code', label: 'Code', render: v => <code style={{ background: '#EEF4FA', padding: '2px 6px', borderRadius: 4, fontSize: 12, color: '#0F2B4A' }}>{v}</code> },
-    { key: 'name', label: 'Subject', render: (v, r) => <div><div style={{ fontWeight: 500 }}>{v}</div><div style={{ fontSize: 12, color: '#7B8494' }}>{r.batchName}</div></div> },
-    { key: 'faculty', label: 'Faculty', render: v => <span style={{ fontSize: 13 }}>{v || '—'}</span> },
+    { key: 'name', label: 'Subject', render: (v, r) => (
+      <div>
+        <div style={{ fontWeight: 500 }}>{v}</div>
+        <div style={{ fontSize: 12, color: '#7B8494' }}>{r.batch?.name || r.batchName || ''}</div>
+      </div>
+    )},
+    { key: 'faculty', label: 'Faculty', render: (v, r) => {
+      const f = r.faculty;
+      const name = f ? [f.firstName, f.lastName].filter(Boolean).join(' ') : (typeof v === 'string' ? v : '');
+      return <span style={{ fontSize: 13 }}>{name || '—'}</span>;
+    }},
     { key: 'creditHours', label: 'Credits', render: v => <Badge color="navy">{v}</Badge> },
-    { key: 'examMode', label: 'Mode', render: v => <Badge color={v === 'online' ? 'teal' : 'navy'}>{v}</Badge> },
-    { key: 'type', label: 'Type', render: v => <Badge color={v === 'elective' ? 'purple' : 'gray'}>{v}</Badge> },
-    { key: 'status', label: 'Status', render: v => <Badge color={v === 'active' ? 'green' : 'gray'}>{v || 'draft'}</Badge> },
-    { key: 'id', label: '', render: id => <Btn size="sm" variant="ghost" onClick={async () => { await api.post(`/subjects/${id}/archive`); refetch(); }}>Archive</Btn> }
+    { key: 'examMode', label: 'Mode', render: v => <Badge color={String(v).toUpperCase() === 'ONLINE' ? 'teal' : 'navy'}>{String(v || '').toUpperCase()}</Badge> },
+    { key: 'status', label: 'Status', render: v => {
+      const n = String(v || 'active').toLowerCase();
+      return <Badge color={n === 'active' ? 'green' : 'gray'}>{n}</Badge>;
+    }},
+    { key: 'id', label: '', render: (id, r) => (
+      <div style={{ display: 'flex', gap: 6 }}>
+        <Btn size="sm" variant="outline" onClick={() => handleEdit(r)}>Edit</Btn>
+        <Btn size="sm" variant="ghost" onClick={() => handleArchive(id)}>Archive</Btn>
+        <Btn size="sm" variant="danger" onClick={() => handleDelete(id)}>Delete</Btn>
+      </div>
+    )},
   ];
+
+  const subjectFields = (f, setter) => (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <Input label="Subject Name" value={f.name} onChange={setField('name', setter)} />
+      <Input label="Code" value={f.code} onChange={setField('code', setter)} placeholder="e.g. BTH301" />
+      <Select label="Semester" value={f.semesterId} onChange={setField('semesterId', setter)}
+        options={(semesters?.semesters || []).map(s => ({ value: s.id, label: s.name }))} />
+      <Select label="Batch" value={f.batchId} onChange={setField('batchId', setter)} options={allBatches} />
+      <Select label="Faculty" value={f.facultyId} onChange={setField('facultyId', setter)} options={facultyOptions} />
+      <Input label="Credit Hours" type="number" value={f.creditHours} onChange={setField('creditHours', setter)} />
+      <Input label="ESE Marks" type="number" value={f.eseMarks} onChange={setField('eseMarks', setter)} />
+      <Input label="IA Marks" type="number" value={f.iaMarks} onChange={setField('iaMarks', setter)} />
+      <Input label="Pass Mark" type="number" value={f.passmark} onChange={setField('passmark', setter)} />
+      <Select label="Exam Mode" value={f.examMode} onChange={setField('examMode', setter)}
+        options={[{ value: 'OFFLINE', label: 'Offline' }, { value: 'ONLINE', label: 'Online' }]} />
+      <Select label="Type" value={f.type} onChange={setField('type', setter)}
+        options={[{ value: 'CORE', label: 'Core' }, { value: 'ELECTIVE', label: 'Elective' }]} />
+    </div>
+  );
 
   return (
     <PageWrapper title="Subjects" subtitle="Subject catalogue and assignments">
@@ -49,22 +150,20 @@ export default function Subjects() {
 
       {open && (
         <Modal title="Add Subject" onClose={() => setOpen(false)} wide>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <Input label="Subject Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-            <Input label="Code" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} placeholder="e.g. BTH301" />
-            <Select label="Semester" value={form.semesterId} onChange={e => setForm(f => ({ ...f, semesterId: e.target.value }))} options={(semesters?.semesters || []).map(s => ({ value: s.id, label: s.name }))} />
-            <Select label="Batch" value={form.batchId} onChange={e => setForm(f => ({ ...f, batchId: e.target.value }))} options={allBatches} />
-            <Select label="Faculty" value={form.facultyId} onChange={e => setForm(f => ({ ...f, facultyId: e.target.value }))} options={(faculty?.users || []).map(u => ({ value: u.id, label: `${u.firstName} ${u.lastName}` }))} />
-            <Input label="Credit Hours" type="number" value={form.creditHours} onChange={e => setForm(f => ({ ...f, creditHours: e.target.value }))} />
-            <Input label="ESE Marks" type="number" value={form.eseMarks} onChange={e => setForm(f => ({ ...f, eseMarks: e.target.value }))} />
-            <Input label="IA Marks" type="number" value={form.iaMarks} onChange={e => setForm(f => ({ ...f, iaMarks: e.target.value }))} />
-            <Input label="Pass Mark" type="number" value={form.passmark} onChange={e => setForm(f => ({ ...f, passmark: e.target.value }))} />
-            <Select label="Exam Mode" value={form.examMode} onChange={e => setForm(f => ({ ...f, examMode: e.target.value }))} options={[{ value: 'offline', label: 'Offline' }, { value: 'online', label: 'Online' }]} />
-            <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} options={[{ value: 'core', label: 'Core' }, { value: 'elective', label: 'Elective' }]} />
-          </div>
+          {subjectFields(form, setForm)}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
             <Btn variant="outline" onClick={() => setOpen(false)}>Cancel</Btn>
             <Btn onClick={handleCreate}>Create Subject</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {editOpen && (
+        <Modal title="Edit Subject" onClose={() => setEditOpen(false)} wide>
+          {subjectFields(editForm, setEditForm)}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+            <Btn variant="outline" onClick={() => setEditOpen(false)}>Cancel</Btn>
+            <Btn onClick={handleSaveEdit}>Save Changes</Btn>
           </div>
         </Modal>
       )}

@@ -11,14 +11,14 @@ export function Interviews() {
   const applicants = data?.applicants || [];
 
   const handleSave = async () => {
-    await api.post(`/admissions/${selected.id}/interview`, form);
+    await api.post(`/admissions/${selected.id}/interview`, { interviewScore: form.score, interviewNotes: form.notes, recommendation: form.recommendation });
     setSelected(null); refetch();
   };
 
   const cols = [
     { key: 'name', label: 'Applicant', render: (_,r) => <div><div style={{fontWeight:500}}>{r.firstName} {r.lastName}</div><div style={{fontSize:12,color:'#7B8494'}}>{r.programmeName}</div></div> },
     { key: 'interviewDate', label: 'Date', render: v => v ? new Date(v).toLocaleDateString('en-IN') : 'TBD' },
-    { key: 'pipelineStage', label: 'Stage', render: v => <Badge color={v==='interview_done'?'green':'amber'}>{v.replace(/_/g,' ')}</Badge> },
+    { key: 'pipelineStage', label: 'Stage', render: v => { const lc = String(v||'').toLowerCase(); return <Badge color={lc==='interview_done'?'green':'amber'}>{lc.replace(/_/g,' ')}</Badge>; } },
     { key: 'interviewScore', label: 'Score', render: v => v ? `${v}/10` : '—' },
     { key: 'id', label: '', render: (_,r) => <Btn size="sm" onClick={() => { setSelected(r); setForm({ score: r.interviewScore||'', recommendation: r.recommendation||'accept', notes: r.interviewNotes||'' }); }}>Record</Btn> },
   ];

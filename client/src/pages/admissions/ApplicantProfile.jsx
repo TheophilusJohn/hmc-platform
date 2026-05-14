@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Badge, Btn, Tabs, Modal } from '../../components/common';
 import api from '../../utils/api';
 
-const STAGES = ['received','docs_review','interview_scheduled','interview_done','waitlisted','accepted','enrolled'];
-const STAGE_LABELS = { received:'Received', docs_review:'Docs Review', interview_scheduled:'Interview Scheduled', interview_done:'Interview Done', waitlisted:'Waitlisted', accepted:'Accepted', enrolled:'Enrolled', rejected:'Rejected' };
+const STAGES = ['RECEIVED','DOCS_REVIEW','INTERVIEW_SCHEDULED','INTERVIEW_DONE','WAITLISTED','ACCEPTED','ENROLLED'];
+const STAGE_LABELS = { RECEIVED:'Received', DOCS_REVIEW:'Docs Review', INTERVIEW_SCHEDULED:'Interview Scheduled', INTERVIEW_DONE:'Interview Done', WAITLISTED:'Waitlisted', ACCEPTED:'Accepted', ENROLLED:'Enrolled', REJECTED:'Rejected' };
 const DOCS = ['Photo ID', 'Academic Transcripts', 'Church Letter', 'Birth Certificate', 'Medical Certificate', 'Statement of Faith', 'Application Form'];
 
 export default function ApplicantProfile({ applicant: initial, onClose, onUpdate }) {
@@ -17,7 +17,7 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
 
   const refresh = async () => {
     const { data } = await api.get(`/admissions/${applicant.id}`);
-    setApplicant(data);
+    setApplicant(data.applicant || data);
   };
 
   const advance = async () => {
@@ -44,11 +44,11 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
   };
 
   const saveInterview = async () => {
-    await api.post(`/admissions/${applicant.id}/interview`, { notes: interviewNotes, score: interviewScore });
+    await api.post(`/admissions/${applicant.id}/interview`, { interviewScore, interviewNotes });
     await refresh();
   };
 
-  const canAdvance = applicant.pipelineStage !== 'enrolled' && applicant.pipelineStage !== 'rejected';
+  const canAdvance = applicant.pipelineStage !== 'ENROLLED' && applicant.pipelineStage !== 'REJECTED';
   const stageIdx = STAGES.indexOf(applicant.pipelineStage);
   const nextStage = STAGES[stageIdx + 1];
 
@@ -65,7 +65,7 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700 }}>{applicant.firstName} {applicant.lastName}</div>
               <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>{applicant.applicationNo} · {applicant.programmeName}</div>
               <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                <Badge color={applicant.studentType === 'domestic' ? 'navy' : 'teal'} style={{ fontSize: 11 }}>{applicant.studentType}</Badge>
+                <Badge color={String(applicant.studentType || '').toUpperCase() === 'DOMESTIC' ? 'navy' : 'teal'} style={{ fontSize: 11 }}>{applicant.studentType}</Badge>
                 <Badge color="gold" style={{ fontSize: 11, background: 'rgba(201,146,10,0.2)', color: '#F5E6BE', borderColor: 'rgba(201,146,10,0.4)' }}>{STAGE_LABELS[applicant.pipelineStage]}</Badge>
               </div>
             </div>
@@ -78,13 +78,13 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
           {canAdvance && nextStage && (
             <Btn size="sm" onClick={advance} disabled={loading}>Advance → {STAGE_LABELS[nextStage]}</Btn>
           )}
-          {['received','docs_review','interview_scheduled','interview_done','waitlisted'].includes(applicant.pipelineStage) && (
+          {['RECEIVED','DOCS_REVIEW','INTERVIEW_SCHEDULED','INTERVIEW_DONE','WAITLISTED'].includes(applicant.pipelineStage) && (
             <Btn size="sm" variant="success" onClick={accept} disabled={loading}>Accept</Btn>
           )}
-          {applicant.pipelineStage !== 'enrolled' && applicant.pipelineStage !== 'rejected' && (
+          {applicant.pipelineStage !== 'ENROLLED' && applicant.pipelineStage !== 'REJECTED' && (
             <Btn size="sm" variant="danger" onClick={() => setShowReject(true)}>Reject</Btn>
           )}
-          {applicant.pipelineStage === 'accepted' && (
+          {applicant.pipelineStage === 'ACCEPTED' && (
             <Btn size="sm" variant="gold" onClick={async () => { await api.post(`/admissions/${applicant.id}/enroll`); onUpdate(); }}>Confirm Enrollment</Btn>
           )}
         </div>

@@ -9,7 +9,7 @@ export default function SystemSettings() {
   const { data: completion } = useApi('/settings/completion');
   const [settings, setSettings] = useState({});
 
-  useEffect(() => { if (data) setSettings(data); }, [data]);
+  useEffect(() => { if (data) setSettings(data?.settings || data || {}); }, [data]);
 
   const handleSave = async (section) => {
     await api.put(`/settings`, { [section]: settings[section] });

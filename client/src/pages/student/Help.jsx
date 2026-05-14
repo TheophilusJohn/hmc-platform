@@ -44,7 +44,7 @@ export function Help() {
               <div key={q.id} style={{ padding: '14px 0', borderBottom: '1px solid #DDE1E7' }}>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
                   <Badge color="navy">{q.category}</Badge>
-                  <Badge color={statusColors[q.status] || 'gray'}>{q.status.replace(/_/g, ' ')}</Badge>
+                  <Badge color={statusColors[String(q.status || '').toLowerCase()] || 'gray'}>{String(q.status || '').toLowerCase().replace(/_/g, ' ')}</Badge>
                 </div>
                 <div style={{ fontWeight: 500, fontSize: 13 }}>{q.subject}</div>
                 <div style={{ fontSize: 12, color: '#7B8494', marginTop: 2 }}>{new Date(q.createdAt).toLocaleDateString('en-IN')}</div>

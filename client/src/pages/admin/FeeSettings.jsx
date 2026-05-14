@@ -1,42 +1,86 @@
-// FeeSettings.jsx
 import { useState } from 'react';
-import { PageWrapper, Card, Btn, Table, Modal, Input, Select, Badge } from '../../components/common';
+import { PageWrapper, Card, Btn, Badge, Table, Modal, Input, Select } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
 const AUTO_APPLY_OPTS = [
-  { value: 'all', label: 'All Students' }, { value: 'offline', label: 'Offline Only' },
-  { value: 'online', label: 'Online Only' }, { value: 'monthly', label: 'Monthly (Hostel)' }, { value: 'manual', label: 'Manual Only' }
+  { value: 'ALL', label: 'All Students' },
+  { value: 'OFFLINE_ONLY', label: 'Offline Only' },
+  { value: 'ONLINE_ONLY', label: 'Online Only' },
+  { value: 'MONTHLY', label: 'Monthly (Hostel)' },
+  { value: 'MANUAL', label: 'Manual Only' }
 ];
+
+const EMPTY = { name: '', domesticAmount: '', internationalAmount: '', autoApply: 'MANUAL', description: '' };
 
 export default function FeeSettings() {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', domesticAmount: '', internationalAmount: '', autoApply: 'manual' });
+  const [editOpen, setEditOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [editForm, setEditForm] = useState({ id: '', ...EMPTY });
   const { data, refetch } = useApi('/fee-types');
 
   const handleCreate = async () => {
-    await api.post('/fee-types', form);
-    setOpen(false); refetch();
+    try {
+      await api.post('/fee-types', form);
+      setOpen(false);
+      setForm(EMPTY);
+      refetch();
+    } catch (e) { alert(e.response?.data?.error || 'Failed'); }
+  };
+
+  const handleEdit = (row) => {
+    setEditForm({
+      id: row.id,
+      name: row.name || '',
+      domesticAmount: row.domesticAmount || '',
+      internationalAmount: row.internationalAmount || '',
+      autoApply: row.autoApply || 'MANUAL',
+      description: row.description || '',
+    });
+    setEditOpen(true);
+  };
+
+  const handleSaveEdit = async () => {
+    try {
+      const { id, ...payload } = editForm;
+      await api.put(`/fee-types/${id}`, payload);
+      setEditOpen(false);
+      refetch();
+    } catch (e) { alert(e.response?.data?.error || 'Save failed'); }
+  };
+
+  const handleDeactivate = async (id) => {
+    if (!window.confirm('Deactivate this fee type? Existing ledger entries are unaffected.')) return;
+    await api.delete(`/fee-types/${id}`);
+    refetch();
   };
 
   const cols = [
-    { key: 'name', label: 'Fee Name', render: v => <strong style={{ color: '#1A1D23' }}>{v}</strong> },
-    { key: 'domesticAmount', label: 'Domestic (₹)', render: v => `₹${Number(v).toLocaleString()}` },
-    { key: 'internationalAmount', label: 'International ($)', render: v => v ? `$${v}` : '—' },
-    { key: 'autoApply', label: 'Auto Apply', render: v => <Badge color="teal">{v}</Badge> },
-    { key: 'isActive', label: 'Status', render: v => <Badge color={v ? 'green' : 'red'}>{v ? 'Active' : 'Inactive'}</Badge> },
-    { key: 'id', label: '', render: (id) => <Btn size="sm" variant="outline" onClick={async () => { await api.delete(`/fee-types/${id}`); refetch(); }}>Deactivate</Btn> }
+    { key: 'name', label: 'Fee Type', render: (v, r) => <div><div style={{ fontWeight: 600, color: '#0F2B4A' }}>{v}</div>{r.description && <div style={{ fontSize: 12, color: '#7B8494' }}>{r.description}</div>}</div> },
+    { key: 'domesticAmount', label: 'Domestic', render: v => <span>₹{Number(v || 0).toLocaleString()}</span> },
+    { key: 'internationalAmount', label: 'International', render: v => <span>${Number(v || 0).toLocaleString()}</span> },
+    { key: 'autoApply', label: 'Auto Apply', render: v => <Badge color="teal">{String(v || '').toLowerCase().replace(/_/g, ' ')}</Badge> },
+    { key: 'isActive', label: 'Status', render: v => <Badge color={v ? 'green' : 'gray'}>{v ? 'active' : 'inactive'}</Badge> },
+    { key: 'id', label: '', render: (id, r) => (
+      <div style={{ display: 'flex', gap: 6 }}>
+        <Btn size="sm" variant="outline" onClick={() => handleEdit(r)}>Edit</Btn>
+        {r.isActive !== false && <Btn size="sm" variant="danger" onClick={() => handleDeactivate(id)}>Deactivate</Btn>}
+      </div>
+    )},
   ];
 
   return (
-    <PageWrapper title="Fee Settings" subtitle="Fee library and tuition configuration">
+    <PageWrapper title="Fee Library" subtitle="Manage fee types and auto-apply rules">
       <Card title="Fee Library" action={<Btn onClick={() => setOpen(true)}>+ Add Fee Type</Btn>}>
-        <Table columns={cols} rows={data?.fees || []} />
+        <Table columns={cols} rows={data?.fees || data?.feeTypes || []} />
       </Card>
+
       {open && (
-        <Modal title="Add Fee Type" onClose={() => setOpen(false)}>
+        <Modal title="New Fee Type" onClose={() => setOpen(false)}>
           <div style={{ display: 'grid', gap: 14 }}>
-            <Input label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+            <Input label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Tuition Fee — Year 1" />
+            <Input label="Description (optional)" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Input label="Domestic Amount (₹)" type="number" value={form.domesticAmount} onChange={e => setForm(f => ({ ...f, domesticAmount: e.target.value }))} />
               <Input label="International Amount ($)" type="number" value={form.internationalAmount} onChange={e => setForm(f => ({ ...f, internationalAmount: e.target.value }))} />
@@ -46,6 +90,24 @@ export default function FeeSettings() {
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
             <Btn variant="outline" onClick={() => setOpen(false)}>Cancel</Btn>
             <Btn onClick={handleCreate}>Save</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {editOpen && (
+        <Modal title="Edit Fee Type" onClose={() => setEditOpen(false)}>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <Input label="Name" value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} />
+            <Input label="Description" value={editForm.description} onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Input label="Domestic Amount (₹)" type="number" value={editForm.domesticAmount} onChange={e => setEditForm(f => ({ ...f, domesticAmount: e.target.value }))} />
+              <Input label="International Amount ($)" type="number" value={editForm.internationalAmount} onChange={e => setEditForm(f => ({ ...f, internationalAmount: e.target.value }))} />
+            </div>
+            <Select label="Auto Apply Rule" value={editForm.autoApply} onChange={e => setEditForm(f => ({ ...f, autoApply: e.target.value }))} options={AUTO_APPLY_OPTS} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+            <Btn variant="outline" onClick={() => setEditOpen(false)}>Cancel</Btn>
+            <Btn onClick={handleSaveEdit}>Save Changes</Btn>
           </div>
         </Modal>
       )}

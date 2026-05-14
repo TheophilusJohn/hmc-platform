@@ -33,6 +33,21 @@ const settingsRoutes = require('./routes/settings');
 const waiverRoutes = require('./routes/waivers');
 const certificateRoutes = require('./routes/certificates');
 const examSessionRoutes = require('./routes/examSession');
+const timetableRoutes = require('./routes/timetable');
+const directMessageRoutes = require('./routes/directMessages');
+const exceptionRoutes = require('./routes/exceptions');
+const marksheetRoutes = require('./routes/marksheet');
+const taRoutes = require('./routes/ta');
+const meRoutes = require('./routes/me');
+const studentRoutes = require('./routes/students');
+const subjectExtraRoutes = require('./routes/subjectExtras');
+const feesExtraRoutes = require('./routes/feesExtras');
+const enrollmentExtraRoutes = require('./routes/enrollmentExtras');
+const examExtraRoutes = require('./routes/examExtras');
+const userExtraRoutes = require('./routes/userExtras');
+const feeTypeRoutes = require('./routes/feeTypes');
+const semesterExtraRoutes = require('./routes/semesterExtras');
+const reportExtraRoutes = require('./routes/reportExtras');
 
 function createApp() {
   const app = express();
@@ -90,18 +105,27 @@ app.set('trust proxy', 1);
   app.get('/api/transcripts/verify/:uuid', transcriptRoutes); // public verification
 
   // Protected routes
+  app.use('/api/users', userExtraRoutes);
   app.use('/api/users', userRoutes);
+  app.use('/api/me', meRoutes);
+  app.use('/api/students', studentRoutes);
   app.use('/api/programmes', programmeRoutes);
+  app.use('/api/semesters', semesterExtraRoutes);
   app.use('/api/semesters', semesterRoutes);
+  app.use('/api/subjects', subjectExtraRoutes);
   app.use('/api/subjects', subjectRoutes);
+  app.use('/api/enrollments', enrollmentExtraRoutes);
   app.use('/api/enrollments', enrollmentRoutes);
   app.use('/api/content', contentRoutes);
+  app.use('/api/exams', examExtraRoutes);
   app.use('/api/exams', examRoutes);
   app.use('/api/submissions', submissionRoutes);
   app.use('/api/question-bank', questionBankRoutes);
   app.use('/api/attendance', attendanceRoutes);
   app.use('/api/revaluation', revaluationRoutes);
+  app.use('/api/fees', feesExtraRoutes);
   app.use('/api/fees', feeRoutes);
+  app.use('/api/fee-types', feeTypeRoutes);
   app.use('/api/payments', paymentRoutes);
   app.use('/api/hostel', hostelRoutes);
   app.use('/api/admissions', admissionsRoutes);
@@ -109,12 +133,18 @@ app.set('trust proxy', 1);
   app.use('/api/messages', messageRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/queries', queryRoutes);
+  app.use('/api/reports', reportExtraRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/transcripts', transcriptRoutes);
   app.use('/api/settings', settingsRoutes);
   app.use('/api/waivers', waiverRoutes);
   app.use('/api/certificates', certificateRoutes);
   app.use('/api/exam-session', examSessionRoutes);
+  app.use('/api/timetable', timetableRoutes);
+  app.use('/api/direct-messages', directMessageRoutes);
+  app.use('/api/exceptions', exceptionRoutes);
+  app.use('/api/marksheet', marksheetRoutes);
+  app.use('/api/ta', taRoutes);
 
   // 404
   app.use((_req, res) => {

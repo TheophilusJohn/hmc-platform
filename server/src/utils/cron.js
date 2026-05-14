@@ -1,20 +1,18 @@
+// server/src/utils/cron.js
 const cron = require('node-cron');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const notif = require('../services/notification.service');
-const logger = require('./logger');
 
 function initCronJobs() {
-  // 1st of every month at 00:05: auto-charge hostel fees
-  cron.schedule('5 0 1 * *', async () => {
-    console.log('CRON: Running monthly hostel charges');
+  // Monthly hostel charge on 1st of each month at 02:00
+  cron.schedule('0 2 1 * *', async () => {
+    console.log('CRON: Generating monthly hostel charges');
     try {
-      const feeType = await prisma.feeType.findFirst({ where: { name: 'Hostel', is_active: true } });
+      const feeType = await prisma.feeType.findFirst({ where: { name: 'Hostel', isActive: true } });
       if (!feeType) return;
 
       const hostellers = await prisma.studentProfile.findMany({
-        where: { hostel_status: 'hosteller', user: { status: 'active' } },
-        include: { user: true },
+        where: { hostelStatus: 'HOSTELLER', user: { status: 'ACTIVE' } },
       });
 
       const now = new Date();
@@ -23,14 +21,17 @@ function initCronJobs() {
         try {
           await prisma.studentFeeLedger.create({
             data: {
-              student_id: h.user_id, fee_type_id: feeType.id,
-              amount: feeType.domestic_amount, currency: 'INR',
-              balance: feeType.domestic_amount, status: 'unpaid',
-              due_date: new Date(now.getFullYear(), now.getMonth(), 10),
+              studentId: h.id,
+              feeTypeId: feeType.id,
+              amount: feeType.domesticAmount,
+              currency: 'INR',
+              balance: feeType.domesticAmount,
+              status: 'UNPAID',
+              dueDate: new Date(now.getFullYear(), now.getMonth(), 10),
             },
           });
           charged++;
-        } catch (e) { /* Skip duplicates */ }
+        } catch (e) { /* skip duplicates */ }
       }
       console.log(`CRON: Hostel fees charged for ${charged} students`);
     } catch (err) { console.error('CRON hostel charge failed:', err); }
@@ -41,8 +42,8 @@ function initCronJobs() {
     console.log('CRON: Checking overdue installments');
     try {
       const plans = await prisma.installmentPlan.findMany({
-        where: { status: 'active' },
-        include: { student: { include: { student_profile: true } } },
+        where: { status: 'ACTIVE' },
+        include: { student: { include: { user: true } } },
       });
 
       for (const plan of plans) {
@@ -50,13 +51,13 @@ function initCronJobs() {
         const today = new Date();
         let hasOverdue = false;
         for (const inst of schedule) {
-          if (new Date(inst.due_date) < today && inst.status !== 'paid') {
+          if (new Date(inst.dueDate) < today && inst.status !== 'paid') {
             hasOverdue = true;
             break;
           }
         }
-        if (hasOverdue && plan.status !== 'overdue') {
-          await prisma.installmentPlan.update({ where: { id: plan.id }, data: { status: 'overdue' } });
+        if (hasOverdue && plan.status !== 'OVERDUE') {
+          await prisma.installmentPlan.update({ where: { id: plan.id }, data: { status: 'OVERDUE' } });
         }
       }
     } catch (err) { console.error('CRON installment check failed:', err); }
@@ -67,46 +68,62 @@ function initCronJobs() {
     console.log('CRON: Checking attendance thresholds');
     try {
       const threshold = 75;
-      const students = await prisma.user.findMany({ where: { role: 'student', status: 'active' } });
+      const students = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE' },
+        include: { studentProfile: true },
+      });
 
       for (const student of students) {
+        if (!student.studentProfile) continue;
         const subjectAttendance = await prisma.$queryRaw`
-          SELECT subject_id,
-            ROUND(SUM(CASE WHEN status IN ('present','late') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as pct
-          FROM attendance
-          WHERE student_id = ${student.id}
-          GROUP BY subject_id
-          HAVING ROUND(SUM(CASE WHEN status IN ('present','late') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) < ${threshold}
+          SELECT "subjectId",
+            ROUND(SUM(CASE WHEN status IN ('PRESENT','LATE') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as pct
+          FROM "Attendance"
+          WHERE "studentId" = ${student.studentProfile.id}
+          GROUP BY "subjectId"
+          HAVING ROUND(SUM(CASE WHEN status IN ('PRESENT','LATE') THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) < ${threshold}
         `;
 
         if (subjectAttendance.length > 0) {
-          await notif.createNotification(student.id, 'attendance_warning', 'Attendance Warning', `Your attendance is below ${threshold}% in ${subjectAttendance.length} subject(s). Please attend classes regularly.`, '/student/timetable');
+          await notif.createNotification(
+            student.id,
+            'attendance_warning',
+            'Attendance Warning',
+            `Your attendance is below ${threshold}% in ${subjectAttendance.length} subject(s). Please attend classes regularly.`,
+            '/student/timetable'
+          );
         }
       }
     } catch (err) { console.error('CRON attendance check failed:', err); }
   });
 
-  // 3 days before marks deadline: remind faculty
+  // Daily at 10:00: send marks deadline reminders
   cron.schedule('0 10 * * *', async () => {
+    console.log('CRON: Sending marks deadline reminders');
     try {
       const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
       const upcomingDeadlines = await prisma.semester.findMany({
         where: {
-          status: 'active',
-          marks_deadline: { gte: new Date(), lte: threeDaysFromNow },
+          status: 'ACTIVE',
+          marksDeadline: { gte: new Date(), lte: threeDaysFromNow },
         },
-        include: { subjects: { include: { faculty: true } } },
+        include: { subjects: { include: { faculty: { include: { user: true } } } } },
       });
 
       for (const sem of upcomingDeadlines) {
         for (const subject of sem.subjects) {
-          if (subject.faculty_id) {
-            // Check if there are ungraded submissions
+          if (subject.facultyId && subject.faculty?.user) {
             const pending = await prisma.submission.count({
-              where: { exam: { subject_id: subject.id }, status: 'submitted' },
+              where: { exam: { subjectId: subject.id }, status: 'SUBMITTED' },
             });
             if (pending > 0) {
-              await notif.createNotification(subject.faculty_id, 'marks_deadline', 'Marks Deadline Approaching', `Marks deadline for ${subject.name} is approaching (${sem.marks_deadline?.toLocaleDateString()}). You have ${pending} ungraded submission(s).`, '/faculty/exams');
+              await notif.createNotification(
+                subject.faculty.user.id,
+                'marks_deadline',
+                'Marks Deadline Approaching',
+                `Marks deadline for ${subject.name} is approaching (${sem.marksDeadline?.toLocaleDateString()}). You have ${pending} ungraded submission(s).`,
+                '/faculty/exams'
+              );
             }
           }
         }

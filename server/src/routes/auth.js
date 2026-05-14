@@ -11,9 +11,9 @@ const { logAudit } = require('../middleware/audit');
 const TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || '8h';
 const SESSION_HOURS = 8;
 
-function generateToken(user) {
+function generateToken(user, mustChangePassword = false) {
   return jwt.sign(
-    { userId: user.id, role: user.role, userIdDisplay: user.userIdDisplay },
+    { userId: user.id, role: user.role, userIdDisplay: user.userIdDisplay, mustChangePassword },
     process.env.JWT_SECRET,
     { expiresIn: TOKEN_EXPIRY }
   );
@@ -69,7 +69,7 @@ router.post('/login', async (req, res, next) => {
       data: { failedAttempts: 0, lastLogin: new Date() },
     });
 
-    const token = generateToken(user);
+    const token = generateToken(user, isTempPassword);
 
     // Create session
     await prisma.session.create({
@@ -103,31 +103,35 @@ router.post('/login', async (req, res, next) => {
         studyMode: user.studentProfile?.studyMode,
       },
       forcePasswordChange: isTempPassword,
+      force_change_password: isTempPassword,
     });
   } catch (err) {
     next(err);
   }
 });
 
-// POST /api/auth/change-password
+// POST /api/auth/change-password - auto-detects whether current pw is temp or main
 router.post('/change-password', authenticate, async (req, res, next) => {
   try {
-    const { currentPassword, newPassword, isFirstLogin } = req.body;
-
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword) return res.status(400).json({ error: 'Current password is required' });
     if (!newPassword || newPassword.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ error: 'New password must differ from current' });
+    }
 
     const auth = await prisma.userAuth.findUnique({ where: { userId: req.user.id } });
+    if (!auth) return res.status(404).json({ error: 'User not found' });
 
-    if (!isFirstLogin) {
-      const match = await bcrypt.compare(currentPassword, auth.passwordHash);
-      if (!match) return res.status(400).json({ error: 'Current password is incorrect' });
-    } else {
-      // Verify temp password
-      if (!auth.tempPasswordHash) return res.status(400).json({ error: 'No temporary password set' });
-      const tempMatch = await bcrypt.compare(currentPassword, auth.tempPasswordHash);
-      if (!tempMatch) return res.status(400).json({ error: 'Temporary password is incorrect' });
+    let tempMatch = false;
+    if (auth.tempPasswordHash && auth.tempPasswordExpires && auth.tempPasswordExpires > new Date()) {
+      tempMatch = await bcrypt.compare(currentPassword, auth.tempPasswordHash);
+    }
+    const mainMatch = await bcrypt.compare(currentPassword, auth.passwordHash);
+    if (!tempMatch && !mainMatch) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
     }
 
     const newHash = await bcrypt.hash(newPassword, 12);
@@ -137,10 +141,15 @@ router.post('/change-password', authenticate, async (req, res, next) => {
         passwordHash: newHash,
         tempPasswordHash: null,
         tempPasswordExpires: null,
-      }
+        failedAttempts: 0,
+      },
     });
 
-    res.json({ message: 'Password changed successfully' });
+    // Issue fresh token without the mustChangePassword flag
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const newToken = generateToken(user, false);
+
+    res.json({ message: 'Password changed successfully', token: newToken });
   } catch (err) {
     next(err);
   }

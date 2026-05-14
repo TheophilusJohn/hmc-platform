@@ -4,3 +4,16 @@ ssl/
 ssl/
 .env
 ssl/
+
+.env
+.env.local
+
+# Defensive additions
+node_modules/
+*.log
+.DS_Store
+dist/
+build/
+.env.local
+audit-report.md
+CLAUDE.md

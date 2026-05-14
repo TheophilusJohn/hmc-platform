@@ -15,17 +15,40 @@ export default function QuestionBank() {
   const { data: questions, refetch } = useApi(selectedSubject ? `/subjects/${selectedSubject}/questions` : null, [selectedSubject]);
 
   const handleCreate = async () => {
-    await api.post(`/subjects/${selectedSubject}/questions`, form);
-    setOpen(false); refetch();
+    if (!form.question.trim()) { alert('Question text required.'); return; }
+    try {
+      await api.post(`/subjects/${selectedSubject}/questions`, form);
+      setOpen(false);
+      setForm({ question: '', type: 'mcq', options: ['', '', '', ''], answer: '0', difficulty: 'medium', marks: 1, explanation: '' });
+      refetch();
+    } catch (e) {
+      alert('Failed to add question: ' + (e?.response?.data?.error || e.message));
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this question?')) return;
+    try {
+      await api.delete(`/subjects/${selectedSubject}/questions/${id}`);
+      refetch();
+    } catch (e) {
+      alert('Failed to delete: ' + (e?.response?.data?.error || e.message));
+    }
   };
 
   const cols = [
-    { key: 'question', label: 'Question', render: v => <span style={{ fontSize: 13 }}>{v.length > 80 ? v.slice(0, 80) + '...' : v}</span> },
-    { key: 'type', label: 'Type', render: v => <Badge color="purple">{v}</Badge> },
-    { key: 'difficulty', label: 'Diff.', render: v => <Badge color={DIFF_COLORS[v]}>{v}</Badge> },
-    { key: 'marks', label: 'Marks', render: v => v },
+    { key: 'questionText', label: 'Question', render: (v, r) => {
+      const text = v || r.question || '';
+      return <span style={{ fontSize: 13 }}>{text.length > 80 ? text.slice(0, 80) + '…' : text}</span>;
+    }},
+    { key: 'type', label: 'Type', render: v => <Badge color="purple">{String(v || '').toLowerCase()}</Badge> },
+    { key: 'difficulty', label: 'Diff.', render: v => {
+      const lc = String(v || '').toLowerCase();
+      return <Badge color={DIFF_COLORS[lc] || 'gray'}>{lc}</Badge>;
+    }},
+    { key: 'marks', label: 'Marks', render: v => v ?? 1 },
     { key: 'usedCount', label: 'Used', render: v => v || 0 },
-    { key: 'id', label: '', render: id => <Btn size="sm" variant="danger" onClick={async () => { await api.delete(`/questions/${id}`); refetch(); }}>Delete</Btn> },
+    { key: 'id', label: '', render: id => <Btn size="sm" variant="danger" onClick={() => handleDelete(id)}>Delete</Btn> },
   ];
 
   return (
@@ -40,6 +63,9 @@ export default function QuestionBank() {
           {selectedSubject && <Btn onClick={() => setOpen(true)}>+ Add Question</Btn>}
         </div>
         {selectedSubject && <Table columns={cols} rows={questions?.questions || []} />}
+        {selectedSubject && (!questions?.questions || questions.questions.length === 0) && (
+          <div style={{ textAlign: 'center', color: '#7B8494', padding: 40 }}>No questions added yet for this subject.</div>
+        )}
       </Card>
 
       {open && (

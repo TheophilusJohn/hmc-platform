@@ -1,46 +1,71 @@
+// server/src/routes/attendance.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { facultyOrAbove, adminOrTA } = require('../middleware/rbac');
+const { canAccessSubject } = require('../middleware/subjectAccess');
 
-// GET /api/subjects/:id/attendance
+// Reject attendance dates in the future (1-minute clock skew tolerance)
+function rejectFutureDate(dateInput) {
+  if (!dateInput) return null;
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return 'Invalid date';
+  if (d.getTime() > Date.now() + 60 * 1000) return 'Attendance cannot be marked for a future date';
+  return null;
+}
+
 router.get('/subjects/:id/attendance', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const { date, studentId } = req.query;
-    const where = { subject_id: req.params.id };
+    const where = { subjectId: req.params.id };
     if (date) where.date = new Date(date);
-    if (studentId) where.student_id = studentId;
+    if (studentId) where.studentId = studentId;
 
     const records = await prisma.attendance.findMany({
       where,
-      include: {
-        student: { include: { student_profile: { select: { first_name: true, last_name: true } } } },
-      },
-      orderBy: [{ date: 'desc' }, { student: { student_profile: { last_name: 'asc' } } }],
+      include: { student: { select: { firstName: true, lastName: true } } },
+      orderBy: [{ date: 'desc' }],
     });
     res.json(records);
   } catch (err) { next(err); }
 });
 
-// POST /api/subjects/:id/attendance — bulk mark
 router.post('/subjects/:id/attendance', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    const { date, records, session_type = 'class' } = req.body;
-    // Upsert each attendance record
+    const { date, records, sessionType = 'CLASS' } = req.body;
+    const dateErr = rejectFutureDate(date);
+    if (dateErr) return res.status(400).json({ error: dateErr });
+    if (!(await canAccessSubject(req.user, req.params.id))) {
+      return res.status(403).json({ error: 'You do not teach this subject' });
+    }
+    const fp = await prisma.facultyProfile.findFirst({ where: { userId: req.user.id } });
+
     const result = await Promise.all(records.map(r =>
       prisma.attendance.upsert({
-        where: { subject_id_student_id_date: { subject_id: req.params.id, student_id: r.student_id, date: new Date(date) } },
-        create: { subject_id: req.params.id, student_id: r.student_id, date: new Date(date), status: r.status, marked_by: req.user.id, session_type },
-        update: { status: r.status, marked_by: req.user.id },
+        where: {
+          subjectId_studentId_date_sessionType: {
+            subjectId: req.params.id,
+            studentId: r.studentId,
+            date: new Date(date),
+            sessionType,
+          }
+        },
+        create: {
+          subjectId: req.params.id,
+          studentId: r.studentId,
+          date: new Date(date),
+          status: r.status,
+          markedById: fp?.id,
+          sessionType,
+        },
+        update: { status: r.status, markedById: fp?.id },
       })
     ));
     res.json({ marked: result.length });
   } catch (err) { next(err); }
 });
 
-// PUT /api/attendance/:id
 router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const record = await prisma.attendance.update({ where: { id: req.params.id }, data: req.body });
@@ -48,51 +73,119 @@ router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/subjects/:id/attendance/student/:studentId
 router.get('/subjects/:id/attendance/student/:studentId', authenticate, async (req, res, next) => {
   try {
-    if (req.user.role === 'student' && req.user.id !== req.params.studentId) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (req.user.role === 'STUDENT') {
+      const sp = await prisma.studentProfile.findFirst({ where: { userId: req.user.id } });
+      if (!sp || sp.id !== req.params.studentId) return res.status(403).json({ error: 'Forbidden' });
     }
     const records = await prisma.attendance.findMany({
-      where: { subject_id: req.params.id, student_id: req.params.studentId },
+      where: { subjectId: req.params.id, studentId: req.params.studentId },
       orderBy: { date: 'asc' },
     });
     const total = records.length;
-    const present = records.filter(r => r.status === 'present' || r.status === 'late').length;
+    const present = records.filter(r => r.status === 'PRESENT' || r.status === 'LATE').length;
     const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
     res.json({ records, stats: { total, present, absent: total - present, percentage } });
   } catch (err) { next(err); }
 });
 
-// GET /api/attendance/chapel
 router.get('/chapel', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const { date, batchId } = req.query;
-    const where = { session_type: 'chapel' };
+    const { date } = req.query;
+    const where = { sessionType: 'CHAPEL' };
     if (date) where.date = new Date(date);
 
     const records = await prisma.attendance.findMany({
       where,
-      include: { student: { include: { student_profile: { select: { first_name: true, last_name: true } } } } },
+      include: { student: { select: { firstName: true, lastName: true } } },
       orderBy: { date: 'desc' },
     });
     res.json(records);
   } catch (err) { next(err); }
 });
 
-// POST /api/attendance/chapel/mark
-router.post('/chapel/mark', authenticate, adminOrTA, async (req, res, next) => {
+
+// POST /api/attendance/class - bulk mark class attendance (matches frontend)
+router.post('/class', authenticate, facultyOrAbove, async (req, res, next) => {
+  try {
+    const { subjectId, date, records } = req.body;
+    if (!subjectId) return res.status(400).json({ error: 'subjectId required' });
+    if (!date) return res.status(400).json({ error: 'date required' });
+    const dateErr = rejectFutureDate(date);
+    if (dateErr) return res.status(400).json({ error: dateErr });
+    if (!(await canAccessSubject(req.user, subjectId))) {
+      return res.status(403).json({ error: 'You do not teach this subject' });
+    }
+    const fp = await prisma.facultyProfile.findFirst({ where: { userId: req.user.id } });
+    const normalize = (s) => {
+      const u = String(s || '').toUpperCase();
+      if (u === 'HOLIDAY') return 'EXCUSED';
+      return ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED'].includes(u) ? u : 'ABSENT';
+    };
+    let marked = 0;
+    for (const r of (records || [])) {
+      try {
+        await prisma.attendance.upsert({
+          where: {
+            subjectId_studentId_date_sessionType: {
+              subjectId, studentId: r.studentId,
+              date: new Date(date), sessionType: 'CLASS',
+            }
+          },
+          create: {
+            subjectId, studentId: r.studentId, date: new Date(date),
+            status: normalize(r.status), sessionType: 'CLASS', markedById: fp?.id,
+          },
+          update: { status: normalize(r.status), markedById: fp?.id },
+        });
+        marked++;
+      } catch (e) {
+        console.warn('attendance upsert failed for', r.studentId, e.message);
+      }
+    }
+    res.json({ marked });
+  } catch (err) { next(err); }
+});
+
+// POST /api/attendance/chapel - bulk mark chapel attendance
+router.post('/chapel', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const { date, records } = req.body;
-    const result = await Promise.all(records.map(r =>
-      prisma.attendance.upsert({
-        where: { subject_id_student_id_date: { subject_id: 'chapel', student_id: r.student_id, date: new Date(date) } },
-        create: { subject_id: 'chapel', student_id: r.student_id, date: new Date(date), status: r.status, marked_by: req.user.id, session_type: 'chapel' },
-        update: { status: r.status },
-      })
-    ));
-    res.json({ marked: result.length });
+    if (!date) return res.status(400).json({ error: 'date required' });
+    const dateErr = rejectFutureDate(date);
+    if (dateErr) return res.status(400).json({ error: dateErr });
+    const fp = await prisma.facultyProfile.findFirst({ where: { userId: req.user.id } });
+    const normalize = (s) => {
+      const u = String(s || '').toUpperCase();
+      if (u === 'HOLIDAY') return 'EXCUSED';
+      return ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED'].includes(u) ? u : 'ABSENT';
+    };
+    let marked = 0;
+    for (const r of (records || [])) {
+      try {
+        const existing = await prisma.attendance.findFirst({
+          where: { studentId: r.studentId, date: new Date(date), sessionType: 'CHAPEL' }
+        });
+        if (existing) {
+          await prisma.attendance.update({
+            where: { id: existing.id },
+            data: { status: normalize(r.status), markedById: fp?.id }
+          });
+        } else {
+          await prisma.attendance.create({
+            data: {
+              studentId: r.studentId, date: new Date(date),
+              status: normalize(r.status), sessionType: 'CHAPEL', markedById: fp?.id,
+            }
+          });
+        }
+        marked++;
+      } catch (e) {
+        console.warn('chapel attendance failed for', r.studentId, e.message);
+      }
+    }
+    res.json({ marked });
   } catch (err) { next(err); }
 });
 

@@ -22,23 +22,23 @@ export default function Notifications() {
   return (
     <PageWrapper title="Notifications" subtitle="Updates from HMC">
       <Card>
-        {notifications.some(n => !n.read) && (
+        {notifications.some(n => !n.isRead) && (
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
             <Btn size="sm" variant="outline" onClick={markAllRead}>Mark All Read</Btn>
           </div>
         )}
         {notifications.map(n => (
-          <div key={n.id} onClick={() => !n.read && markRead(n.id)}
-            style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #DDE1E7', cursor: !n.read ? 'pointer' : 'default', background: !n.read ? 'rgba(15,43,74,0.02)' : 'transparent' }}>
+          <div key={n.id} onClick={() => !n.isRead && markRead(n.id)}
+            style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #DDE1E7', cursor: !n.isRead ? 'pointer' : 'default', background: !n.isRead ? 'rgba(15,43,74,0.02)' : 'transparent' }}>
             <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#EEF4FA', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>
               {TYPE_ICONS[n.type] || '📢'}
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 3 }}>
                 <Badge color={TYPE_COLORS[n.type] || 'navy'} style={{ fontSize: 10 }}>{n.type}</Badge>
-                {!n.read && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#0F2B4A' }} />}
+                {!n.isRead && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#0F2B4A' }} />}
               </div>
-              <div style={{ fontWeight: n.read ? 400 : 600, fontSize: 13, color: '#1A1D23' }}>{n.title}</div>
+              <div style={{ fontWeight: n.isRead ? 400 : 600, fontSize: 13, color: '#1A1D23' }}>{n.title}</div>
               <div style={{ fontSize: 12, color: '#7B8494', marginTop: 2 }}>{n.body}</div>
               <div style={{ fontSize: 11, color: '#A0A8B4', marginTop: 4 }}>{new Date(n.createdAt).toLocaleString('en-IN')}</div>
             </div>

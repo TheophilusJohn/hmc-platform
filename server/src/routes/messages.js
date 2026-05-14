@@ -1,71 +1,102 @@
+// server/src/routes/messages.js
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const emailService = require('../services/email.service');
 
 function personalise(template, data) {
   return template
-    .replace(/{student_name}/g, data.student_name || '')
-    .replace(/{balance_due}/g, data.balance_due || '')
-    .replace(/{due_date}/g, data.due_date || '')
-    .replace(/{exam_date}/g, data.exam_date || '')
-    .replace(/{exam_name}/g, data.exam_name || '')
-    .replace(/{subject_name}/g, data.subject_name || '')
+    .replace(/{student_name}/g, data.studentName || '')
+    .replace(/{balance_due}/g, data.balanceDue || '')
+    .replace(/{due_date}/g, data.dueDate || '')
+    .replace(/{exam_date}/g, data.examDate || '')
+    .replace(/{exam_name}/g, data.examName || '')
+    .replace(/{subject_name}/g, data.subjectName || '')
     .replace(/{deadline}/g, data.deadline || '')
     .replace(/{programme}/g, data.programme || '');
 }
 
-// GET /api/messages
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const messages = await prisma.message.findMany({
-      where: req.user.role === 'faculty' ? { sender_id: req.user.id } : undefined,
-      include: { template: { select: { name: true } }, sender: { include: { student_profile: true, faculty_profile: true } } },
-      orderBy: { sent_at: 'desc' },
+      where: req.user.role === 'FACULTY' ? { senderId: req.user.id } : undefined,
+      include: {
+        template: { select: { name: true } },
+        sender: { include: { studentProfile: true, facultyProfile: true } },
+      },
+      orderBy: { sentAt: 'desc' },
     });
-    res.json(messages);
+    res.json({ messages });
   } catch (err) { next(err); }
 });
 
-// POST /api/messages
 router.post('/', authenticate, async (req, res, next) => {
   try {
-    const { type, subject, body, channels, recipient_scope, template_id } = req.body;
+    const { type, subject, body, channels, recipientScope, templateId } = req.body;
     const settings = await prisma.systemSetting.findMany({ where: { key: { in: ['sendgrid', 'communication_phone'] } } });
     const settingsMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
 
-    // Build recipients
     let recipients = [];
-    if (recipient_scope.type === 'all') {
-      const students = await prisma.user.findMany({ where: { role: 'student', status: 'active' }, include: { student_profile: true } });
-      recipients = students;
-    } else if (recipient_scope.type === 'batch') {
-      const students = await prisma.user.findMany({ where: { role: 'student', status: 'active', student_profile: { batch_id: recipient_scope.batch_id } }, include: { student_profile: true } });
-      recipients = students;
-    } else if (recipient_scope.type === 'individual') {
-      const students = await prisma.user.findMany({ where: { id: { in: recipient_scope.student_ids }, role: 'student' }, include: { student_profile: true } });
-      recipients = students;
+    const scopeType = String(recipientScope?.type || 'all').toLowerCase();
+    if (scopeType === 'all') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE' },
+        include: { studentProfile: true },
+      });
+    } else if (scopeType === 'offline' || scopeType === 'online') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { studyMode: scopeType.toUpperCase() } },
+        include: { studentProfile: true },
+      });
+    } else if (scopeType === 'programme') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { programmeId: recipientScope.programmeId } },
+        include: { studentProfile: true },
+      });
+    } else if (scopeType === 'batch') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { batchId: recipientScope.batchId } },
+        include: { studentProfile: true },
+      });
+    } else if (scopeType === 'individual') {
+      recipients = await prisma.user.findMany({
+        where: { id: { in: recipientScope.studentIds || [] }, role: 'STUDENT' },
+        include: { studentProfile: true },
+      });
     }
 
+    // Tolerate channels being either array or object
+    const channelArr = Array.isArray(channels) ? channels :
+      (channels && typeof channels === 'object' ? Object.entries(channels).filter(([_, v]) => v).map(([k]) => k) : []);
+
     const message = await prisma.message.create({
-      data: { sender_id: req.user.id, type, subject, body, channels, recipient_scope, sent_at: new Date(), status: 'sent', template_id: template_id || null },
+      data: {
+        senderId: req.user.id,
+        type, subject, body, channels: channelArr, recipientScope,
+        sentAt: new Date(),
+        status: 'SENT',
+        templateId: templateId || null,
+      },
     });
 
-    // Send emails if channel configured
-    if (channels.includes('email') && settingsMap.sendgrid?.api_key) {
+    if (channelArr.includes('email') && settingsMap.sendgrid?.api_key) {
       await Promise.allSettled(recipients.map(r => {
-        const name = `${r.student_profile?.first_name} ${r.student_profile?.last_name}`;
-        const personalised = personalise(body, { student_name: name });
+        const name = `${r.studentProfile?.firstName || ''} ${r.studentProfile?.lastName || ''}`.trim();
+        const personalised = personalise(body, { studentName: name });
         return emailService.sendGenericMessage(r.email, subject, personalised);
       }));
     }
 
-    // Create in-app notifications
     await Promise.all(recipients.map(r =>
       prisma.notification.create({
-        data: { user_id: r.id, type: 'message', title: subject, body: personalise(body.substring(0, 100), { student_name: `${r.student_profile?.first_name}` }), is_read: false },
+        data: {
+          userId: r.id,
+          type: 'message',
+          title: subject,
+          body: personalise(body.substring(0, 100), { studentName: r.studentProfile?.firstName || '' }),
+          isRead: false,
+        },
       })
     ));
 
@@ -73,23 +104,49 @@ router.post('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/messages/preview-recipients
 router.post('/preview-recipients', authenticate, async (req, res, next) => {
   try {
-    const { recipient_scope } = req.body;
+    const { recipientScope } = req.body;
     let recipients = [];
-    if (recipient_scope.type === 'all') {
-      recipients = await prisma.user.findMany({ where: { role: 'student', status: 'active' }, include: { student_profile: { select: { first_name: true, last_name: true } } } });
-    } else if (recipient_scope.type === 'batch') {
-      recipients = await prisma.user.findMany({ where: { role: 'student', status: 'active', student_profile: { batch_id: recipient_scope.batch_id } }, include: { student_profile: { select: { first_name: true, last_name: true } } } });
-    } else if (recipient_scope.type === 'individual') {
-      recipients = await prisma.user.findMany({ where: { id: { in: recipient_scope.student_ids } }, include: { student_profile: { select: { first_name: true, last_name: true } } } });
+    const scopeType = String(recipientScope?.type || 'all').toLowerCase();
+    const profileSel = { select: { firstName: true, lastName: true } };
+    if (scopeType === 'all') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE' },
+        include: { studentProfile: profileSel },
+      });
+    } else if (scopeType === 'offline' || scopeType === 'online') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { studyMode: scopeType.toUpperCase() } },
+        include: { studentProfile: profileSel },
+      });
+    } else if (scopeType === 'programme') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { programmeId: recipientScope.programmeId } },
+        include: { studentProfile: profileSel },
+      });
+    } else if (scopeType === 'batch') {
+      recipients = await prisma.user.findMany({
+        where: { role: 'STUDENT', status: 'ACTIVE', studentProfile: { batchId: recipientScope.batchId } },
+        include: { studentProfile: profileSel },
+      });
+    } else if (scopeType === 'individual') {
+      recipients = await prisma.user.findMany({
+        where: { id: { in: recipientScope.studentIds || [] } },
+        include: { studentProfile: profileSel },
+      });
     }
-    res.json({ count: recipients.length, recipients: recipients.map(r => ({ id: r.id, name: `${r.student_profile?.first_name} ${r.student_profile?.last_name}`, display_id: r.user_id_display })) });
+    res.json({
+      count: recipients.length,
+      recipients: recipients.map(r => ({
+        id: r.id,
+        name: `${r.studentProfile?.firstName || ''} ${r.studentProfile?.lastName || ''}`.trim(),
+        userIdDisplay: r.userIdDisplay,
+      })),
+    });
   } catch (err) { next(err); }
 });
 
-// GET /api/messages/templates
 router.get('/templates', authenticate, async (req, res, next) => {
   try {
     const templates = await prisma.messageTemplate.findMany({ orderBy: { name: 'asc' } });
@@ -97,37 +154,10 @@ router.get('/templates', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/messages/templates
 router.post('/templates', authenticate, async (req, res, next) => {
   try {
-    const t = await prisma.messageTemplate.create({ data: { ...req.body, created_by: req.user.id } });
+    const t = await prisma.messageTemplate.create({ data: { ...req.body, createdById: req.user.id } });
     res.status(201).json(t);
-  } catch (err) { next(err); }
-});
-
-// GET /api/messages/inbox
-router.get('/inbox', authenticate, async (req, res, next) => {
-  try {
-    // Faculty or student inbox
-    const threads = await prisma.message.findMany({
-      where: { OR: [{ sender_id: req.user.id }, { recipient_scope: { path: ['individual_ids'], array_contains: req.user.id } }] },
-      orderBy: { sent_at: 'desc' },
-    });
-    res.json(threads);
-  } catch (err) { next(err); }
-});
-
-// POST /api/messages/reply
-router.post('/reply', authenticate, async (req, res, next) => {
-  try {
-    const { parent_id, body, recipient_id } = req.body;
-    const reply = await prisma.message.create({
-      data: { sender_id: req.user.id, type: 'general', subject: 'Re:', body, channels: ['in_app'], recipient_scope: { type: 'individual', individual_ids: [recipient_id] }, sent_at: new Date(), status: 'sent', parent_id },
-    });
-    await prisma.notification.create({
-      data: { user_id: recipient_id, type: 'message_reply', title: 'New message reply', body: body.substring(0, 80), is_read: false },
-    });
-    res.status(201).json(reply);
   } catch (err) { next(err); }
 });
 
