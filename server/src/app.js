@@ -68,8 +68,12 @@ app.set('trust proxy', 1);
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
 
-  // Body parsing
-  app.use(express.json({ limit: '10mb' }));
+  // Body parsing — skip JSON parsing for the Razorpay webhook so the route can
+  // verify the HMAC over the raw bytes.
+  app.use((req, res, next) => {
+    if (req.path === '/api/payments/razorpay/webhook') return next();
+    return express.json({ limit: '10mb' })(req, res, next);
+  });
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   // Rate limiting

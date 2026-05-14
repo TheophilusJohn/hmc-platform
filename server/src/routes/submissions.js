@@ -6,6 +6,30 @@ const { authenticate } = require('../middleware/auth');
 const { requireRole, facultyOrAbove } = require('../middleware/rbac');
 const { canAccessSubject } = require('../middleware/subjectAccess');
 
+// Normalize an MCQ answer (string OR array OR JSON string of array) into a
+// sorted set of trimmed strings, then compare for set-equality. This handles
+// both single-correct ("A") and multi-correct (["A","C"] or '["A","C"]') cases.
+function normalizeMcqAnswer(raw) {
+  if (raw === null || raw === undefined) return [];
+  let value = raw;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try { value = JSON.parse(trimmed); } catch (_e) { value = trimmed; }
+    } else {
+      value = trimmed;
+    }
+  }
+  if (!Array.isArray(value)) value = [value];
+  return value.map(v => String(v).trim()).filter(v => v.length).sort();
+}
+function mcqIsCorrect(studentAnswer, correctAnswer) {
+  const a = normalizeMcqAnswer(studentAnswer);
+  const b = normalizeMcqAnswer(correctAnswer);
+  if (a.length !== b.length || a.length === 0) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
 // Helper: verify the calling student owns the submission
 async function studentOwnsSubmission(user, submissionId) {
   if (user.role !== 'STUDENT') return false;
@@ -120,12 +144,13 @@ router.post('/:id/submit', authenticate, requireRole('STUDENT'), async (req, res
     if (!submission) return res.status(404).json({ error: 'Submission not found' });
     if (submission.status !== 'DRAFT') return res.status(400).json({ error: 'Already submitted' });
 
-    // Auto-grade MCQ
+    // Auto-grade MCQ. `correctAnswer` may be a string (single-correct) or a JSON
+    // array (multi-correct); `studentAnswer` may also be a string or array.
+    // Normalize both sides to a sorted set of strings and compare set-equality.
     let autoMarks = 0;
     const mcqQuestions = submission.exam.questions.filter(q => q.type === 'MCQ');
     for (const q of mcqQuestions) {
-      const studentAnswer = answers?.[q.id];
-      if (studentAnswer === q.correctAnswer) {
+      if (mcqIsCorrect(answers?.[q.id], q.correctAnswer)) {
         autoMarks += q.marks;
       }
     }

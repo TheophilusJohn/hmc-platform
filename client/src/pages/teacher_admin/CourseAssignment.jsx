@@ -8,7 +8,8 @@ export default function CourseAssignment() {
   const [assigning, setAssigning] = useState(null);
   const [facultyId, setFacultyId] = useState('');
 
-  const { data: semesters } = useApi('/semesters?status=active,draft');
+  // SemesterStatus enum is UPPERCASE.
+  const { data: semesters } = useApi('/semesters?status=ACTIVE');
   const { data: subjects, refetch } = useApi(semId ? `/subjects?semesterId=${semId}` : null, [semId]);
   const { data: faculty } = useApi('/users?role=FACULTY,TEACHER_ADMIN');
 
@@ -54,8 +55,16 @@ export default function CourseAssignment() {
 
       {assigning && (
         <Modal title={`Assign Faculty — ${assigning.name}`} onClose={() => setAssigning(null)}>
+          {/* Subject.facultyId references FacultyProfile.id, NOT User.id —
+              sending User.id would P2003-fail the assignment. */}
           <Select label="Faculty" value={facultyId} onChange={e => setFacultyId(e.target.value)}
-            options={[{ value: '', label: '— Unassigned —' }, ...(faculty?.users || []).map(u => ({ value: u.id, label: `${u.firstName} ${u.lastName}` }))]} />
+            options={[
+              { value: '', label: '— Unassigned —' },
+              ...((faculty?.users || []).filter(u => u.facultyProfileId).map(u => ({
+                value: u.facultyProfileId,
+                label: `${u.firstName} ${u.lastName}`,
+              }))),
+            ]} />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
             <Btn variant="outline" onClick={() => setAssigning(null)}>Cancel</Btn>
             <Btn onClick={handleAssign}>Save Assignment</Btn>

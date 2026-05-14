@@ -14,6 +14,9 @@ router.get('/', authenticate, async (req, res, next) => {
     } else {
       studentId = req.query.studentId;
     }
+    // Without studentId, Prisma treats `where.studentId: undefined` as "no filter"
+    // and returns every enrollment in the database. Refuse.
+    if (!studentId) return res.status(400).json({ error: 'studentId is required' });
 
     const { semesterId } = req.query;
     const where = { studentId };
@@ -33,7 +36,7 @@ router.get('/', authenticate, async (req, res, next) => {
       },
       orderBy: { subject: { code: 'asc' } },
     });
-    res.json(enrollments);
+    res.json({ enrollments });
   } catch (err) { next(err); }
 });
 
@@ -46,12 +49,13 @@ router.get('/arrears', authenticate, async (req, res, next) => {
     } else {
       studentId = req.query.studentId;
     }
+    if (!studentId) return res.status(400).json({ error: 'studentId is required' });
 
     const arrears = await prisma.studentSubjectEnrollment.findMany({
       where: { studentId, isArrear: true, resultStatus: { in: ['FAIL', 'PENDING'] } },
       include: { subject: { include: { semester: true } } },
     });
-    res.json(arrears);
+    res.json({ arrears });
   } catch (err) { next(err); }
 });
 

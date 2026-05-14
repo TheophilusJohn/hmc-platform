@@ -28,13 +28,33 @@ export default function Subjects() {
   const allBatches = (batches?.programmes || []).flatMap(p =>
     (p.batches || []).map(b => ({ value: b.id, label: `${p.name} – ${b.name}` }))
   );
-  const facultyOptions = (faculty?.users || []).map(u => {
-    const fn = u.firstName || u.facultyProfile?.firstName || '';
-    const ln = u.lastName || u.facultyProfile?.lastName || '';
-    return { value: u.facultyProfile?.id || u.id, label: [fn, ln].filter(Boolean).join(' ') || u.email || u.userIdDisplay };
-  });
+  // Subject.facultyId references FacultyProfile.id, NOT User.id. The /users
+  // endpoint returns a flat shape with `facultyProfileId`; only users that
+  // actually have a faculty profile are eligible.
+  const facultyOptions = (faculty?.users || [])
+    .filter(u => u.facultyProfileId)
+    .map(u => {
+      const fn = u.firstName || '';
+      const ln = u.lastName || '';
+      return {
+        value: u.facultyProfileId,
+        label: [fn, ln].filter(Boolean).join(' ') || u.email || u.userIdDisplay,
+      };
+    });
 
   const setField = (k, target = setForm) => (v) => target(f => ({ ...f, [k]: getVal(v) }));
+
+  // Coerce number-typed inputs to integers — onChange stores the raw string from
+  // the input element, and Prisma rejects strings on Int columns with a cryptic
+  // validation error.
+  const toNumeric = (f) => ({
+    ...f,
+    creditHours: parseInt(f.creditHours, 10) || 0,
+    eseMarks: parseInt(f.eseMarks, 10) || 0,
+    iaMarks: parseInt(f.iaMarks, 10) || 0,
+    passMark: parseInt(f.passMark, 10) || 0,
+    totalMarks: (parseInt(f.eseMarks, 10) || 0) + (parseInt(f.iaMarks, 10) || 0),
+  });
 
   const handleCreate = async () => {
     if (!form.name || !form.code || !form.semesterId || !form.batchId) {
@@ -42,7 +62,7 @@ export default function Subjects() {
       return;
     }
     try {
-      await api.post('/subjects', form);
+      await api.post('/subjects', toNumeric(form));
       setOpen(false); setForm(EMPTY); refetch();
     } catch (err) {
       alert('Failed: ' + (err.response?.data?.error || err.message));
@@ -70,7 +90,7 @@ export default function Subjects() {
   const handleSaveEdit = async () => {
     try {
       const { id, ...payload } = editForm;
-      await api.put(`/subjects/${id}`, payload);
+      await api.put(`/subjects/${id}`, toNumeric(payload));
       setEditOpen(false); refetch();
     } catch (err) { alert('Save failed: ' + (err.response?.data?.error || err.message)); }
   };

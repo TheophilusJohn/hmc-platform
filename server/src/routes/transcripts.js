@@ -89,7 +89,7 @@ router.get('/official/requests', authenticate, adminOnly, async (req, res, next)
   try {
     const requests = await prisma.officialTranscriptRequest.findMany({
       include: { student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } } },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { requestedAt: 'desc' },
     });
     res.json(requests);
   } catch (err) { next(err); }
@@ -101,7 +101,7 @@ router.get('/official/my-requests', authenticate, async (req, res, next) => {
     if (!sp) return res.json([]);
     const requests = await prisma.officialTranscriptRequest.findMany({
       where: { studentId: sp.id },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { requestedAt: 'desc' },
     });
     res.json(requests);
   } catch (err) { next(err); }

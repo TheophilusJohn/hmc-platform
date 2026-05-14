@@ -33,10 +33,14 @@ const HMC_FOOTER = `
 
 async function sendEmail({ to, subject, html }) {
   if (!process.env.SENDGRID_API_KEY) {
-    console.log(`[EMAIL] To: ${to} | Subject: ${subject}`);
-    return;
+    // Loud + structured so deployments without SendGrid don't silently swallow
+    // credential emails. Callers that need delivery confirmation should check
+    // the returned `delivered` flag.
+    console.warn(`[EMAIL UNDELIVERED — SENDGRID_API_KEY missing] To: ${to} | Subject: ${subject}`);
+    return { delivered: false, reason: 'SENDGRID_API_KEY missing' };
   }
   await sgMail.send({ to, from: FROM, subject, html: html + HMC_FOOTER });
+  return { delivered: true };
 }
 
 async function sendWelcomeEmail(user, tempPassword) {

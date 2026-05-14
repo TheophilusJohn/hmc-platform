@@ -3,18 +3,45 @@ import { PageWrapper, Card, Btn, Input, Badge, Table } from '../../components/co
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
-const MODES = [{ value: 'cash', label: 'Cash' }, { value: 'bank_transfer', label: 'Bank Transfer' }, { value: 'upi', label: 'UPI' }, { value: 'card', label: 'Card' }];
+// PaymentMode enum is UPPERCASE on the wire.
+const MODES = [
+  { value: 'CASH', label: 'Cash' },
+  { value: 'BANK_TRANSFER', label: 'Bank Transfer' },
+  { value: 'UPI', label: 'UPI' },
+  { value: 'CARD', label: 'Card' },
+];
+
+const INITIAL = { studentId: '', amount: '', mode: 'CASH', notes: '' };
 
 export default function RecordFees() {
-  const [form, setForm] = useState({ studentId: '', amount: '', mode: 'cash', notes: '', installment: '' });
+  const [form, setForm] = useState(INITIAL);
   const [selected, setSelected] = useState(null);
-  const { data: students } = useApi('/users?role=STUDENT&status=active');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+  const { data: students } = useApi('/users?role=STUDENT&status=ACTIVE');
   const { data: ledger } = useApi(selected ? `/students/${selected}/ledger` : null, [selected]);
 
   const handleRecord = async () => {
-    await api.post('/payments/offline', form);
-    setForm({ studentId: '', amount: '', mode: 'cash', notes: '', installment: '' });
-    alert('Payment recorded. Receipt generated and sent to student.');
+    setError(null); setOk(null);
+    if (!form.studentId) return setError('Pick a student.');
+    const amount = Number(form.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return setError('Enter a positive amount.');
+    setSubmitting(true);
+    try {
+      const { data } = await api.post('/payments/offline', {
+        studentId: form.studentId,
+        amount,
+        mode: form.mode,
+        notes: form.notes || null,
+      });
+      setOk(`Payment recorded. Receipt: ${data?.receiptNo || '(generated)'}`);
+      setForm(INITIAL);
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Failed to record payment.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const ledgerCols = [
@@ -47,7 +74,13 @@ export default function RecordFees() {
             </div>
             <Input label="Notes (optional)" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
           </div>
-          <Btn style={{ marginTop: 20 }} onClick={handleRecord} disabled={!form.studentId || !form.amount}>Record Payment</Btn>
+
+          {error && <div style={{ marginTop: 12, padding: '10px 12px', background: '#FEF2F2', color: '#991B1B', borderRadius: 8, fontSize: 13 }}>{error}</div>}
+          {ok && <div style={{ marginTop: 12, padding: '10px 12px', background: '#ECFDF5', color: '#166534', borderRadius: 8, fontSize: 13 }}>{ok}</div>}
+
+          <Btn style={{ marginTop: 20 }} onClick={handleRecord} disabled={submitting || !form.studentId || !form.amount}>
+            {submitting ? 'Recording…' : 'Record Payment'}
+          </Btn>
         </Card>
 
         <Card title="Student Fee Ledger">

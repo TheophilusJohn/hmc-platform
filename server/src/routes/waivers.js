@@ -2,9 +2,28 @@
 const express = require('express');
 const router = express.Router();
 const prisma = require('../config/db');
+const { Prisma } = require('@prisma/client');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, requireRole } = require('../middleware/rbac');
 const notif = require('../services/notification.service');
+
+const D0 = new Prisma.Decimal(0);
+
+// Decide a ledger's status after a balance/waiver change. Considers actual
+// payments so revoke doesn't incorrectly flip a paid-then-waived row.
+async function deriveLedgerStatus(tx, ledgerId, { balance, waived }) {
+  if (balance.lte(0)) {
+    // Fully cleared: WAIVED if no payments, PAID otherwise (or if waived==0).
+    const paymentAgg = await tx.payment.aggregate({
+      where: { ledgerId, status: 'confirmed' },
+      _sum: { amount: true },
+    });
+    const totalPaid = paymentAgg._sum.amount ? new Prisma.Decimal(paymentAgg._sum.amount) : D0;
+    if (totalPaid.gt(0)) return 'PAID';
+    return waived.gt(0) ? 'WAIVED' : 'PAID';
+  }
+  return 'PARTIAL';
+}
 
 router.get('/', authenticate, adminOnly, async (req, res, next) => {
   try {
@@ -47,32 +66,49 @@ router.post('/', authenticate, requireRole('FULL_ADMIN', 'ADMISSIONS_OFFICER'), 
         throw Object.assign(new Error('A waiver is already active for this ledger entry. Revoke it first.'), { status: 409 });
       }
 
-      let waivedAmount = 0;
-      if (waiverType === 'FULL') waivedAmount = Number(ledger.balance);
-      else if (waiverType === 'PARTIAL_AMOUNT') waivedAmount = Math.min(amountOrPercent, Number(ledger.balance));
-      else if (waiverType === 'PARTIAL_PERCENT') waivedAmount = (Number(ledger.balance) * amountOrPercent) / 100;
+      // Compute the actual waived amount as a Decimal; persist it on the Waiver row
+      // so revoke can restore exactly what was deducted (without re-deriving from
+      // stale balance / stale percent base).
+      const balance = new Prisma.Decimal(ledger.balance);
+      let actualWaived;
+      if (waiverType === 'FULL') {
+        actualWaived = balance;
+      } else if (waiverType === 'PARTIAL_AMOUNT') {
+        const requested = new Prisma.Decimal(amountOrPercent);
+        actualWaived = requested.gt(balance) ? balance : requested;
+      } else if (waiverType === 'PARTIAL_PERCENT') {
+        actualWaived = balance.mul(amountOrPercent).div(100);
+      } else {
+        throw Object.assign(new Error('Invalid waiverType'), { status: 400 });
+      }
+      // Round to 2dp (currency precision)
+      actualWaived = actualWaived.toDecimalPlaces(2);
 
       const waiver = await tx.waiver.create({
         data: {
-          studentId, ledgerId, waiverType, amountOrPercent, reason, customReason,
+          studentId, ledgerId, waiverType, amountOrPercent,
+          actualWaivedAmount: actualWaived,
+          reason, customReason,
           validUntil: validUntil ? new Date(validUntil) : null,
           appliedById: req.user.id,
           notifyStudent,
         },
       });
 
-      const newBalance = Math.max(0, Number(ledger.balance) - waivedAmount);
+      const newBalance = balance.sub(actualWaived);
+      const newWaivedTotal = new Prisma.Decimal(ledger.waivedAmount).add(actualWaived);
+      const newStatus = await deriveLedgerStatus(tx, ledgerId, { balance: newBalance, waived: newWaivedTotal });
       await tx.studentFeeLedger.update({
         where: { id: ledgerId },
         data: {
-          waivedAmount: Number(ledger.waivedAmount) + waivedAmount,
-          balance: newBalance,
+          waivedAmount: newWaivedTotal,
+          balance: newBalance.isNegative() ? D0 : newBalance,
           waiverReason: reason,
-          status: newBalance === 0 ? 'WAIVED' : 'PARTIAL',
+          status: newStatus,
         },
       });
 
-      return { waiver, waivedAmount };
+      return { waiver, waivedAmount: actualWaived };
     });
 
     if (notifyStudent) {
@@ -104,20 +140,47 @@ router.put('/:id/revoke', authenticate, adminOnly, async (req, res, next) => {
       if (waiver.revokedAt) throw Object.assign(new Error('Waiver is already revoked'), { status: 400 });
 
       const ledger = waiver.ledger;
-      const baseAmount = Number(ledger.amount);
+      // Prefer the persisted actual amount; fall back to recomputation for legacy rows.
       let restored;
-      if (waiver.waiverType === 'FULL') restored = Number(ledger.waivedAmount);
-      else if (waiver.waiverType === 'PARTIAL_PERCENT') restored = (baseAmount * Number(waiver.amountOrPercent)) / 100;
-      else restored = Math.min(Number(waiver.amountOrPercent), Number(ledger.waivedAmount));
+      if (waiver.actualWaivedAmount != null) {
+        restored = new Prisma.Decimal(waiver.actualWaivedAmount);
+      } else {
+        const baseAmount = new Prisma.Decimal(ledger.amount);
+        if (waiver.waiverType === 'FULL') restored = new Prisma.Decimal(ledger.waivedAmount);
+        else if (waiver.waiverType === 'PARTIAL_PERCENT') restored = baseAmount.mul(waiver.amountOrPercent).div(100);
+        else {
+          const ap = new Prisma.Decimal(waiver.amountOrPercent);
+          const w = new Prisma.Decimal(ledger.waivedAmount);
+          restored = ap.gt(w) ? w : ap;
+        }
+        restored = restored.toDecimalPlaces(2);
+      }
 
-      const newWaived = Math.max(0, Number(ledger.waivedAmount) - restored);
-      const newBalance = Number(ledger.balance) + restored;
+      const curWaived = new Prisma.Decimal(ledger.waivedAmount);
+      const newWaived = curWaived.sub(restored);
+      const newBalance = new Prisma.Decimal(ledger.balance).add(restored);
+      const newStatus = await deriveLedgerStatus(tx, ledger.id, {
+        balance: newBalance,
+        waived: newWaived.isNegative() ? D0 : newWaived,
+      });
+      // If balance > 0 and there are no payments and no remaining waiver, status is UNPAID.
+      // deriveLedgerStatus handles the balance > 0 → PARTIAL case; explicit UNPAID guard:
+      let resolvedStatus = newStatus;
+      if (newBalance.gt(0) && newWaived.lte(0)) {
+        const paymentAgg = await tx.payment.aggregate({
+          where: { ledgerId: ledger.id, status: 'confirmed' },
+          _sum: { amount: true },
+        });
+        const totalPaid = paymentAgg._sum.amount ? new Prisma.Decimal(paymentAgg._sum.amount) : D0;
+        resolvedStatus = totalPaid.gt(0) ? 'PARTIAL' : 'UNPAID';
+      }
+
       await tx.studentFeeLedger.update({
         where: { id: ledger.id },
         data: {
-          waivedAmount: newWaived,
+          waivedAmount: newWaived.isNegative() ? D0 : newWaived,
           balance: newBalance,
-          status: newWaived > 0 ? 'PARTIAL' : (newBalance > 0 ? 'UNPAID' : 'PAID'),
+          status: resolvedStatus,
         },
       });
 

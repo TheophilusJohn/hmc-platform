@@ -65,12 +65,9 @@ async function ensureBucket(bucketName = DEFAULT_BUCKET) {
   const exists = await client.bucketExists(bucketName);
   if (!exists) {
     await client.makeBucket(bucketName, 'us-east-1');
-    // Legacy public-read policy on content/* — see DEPLOYMENT NOTE above.
-    const policy = JSON.stringify({
-      Version: '2012-10-17',
-      Statement: [{ Effect: 'Allow', Principal: { AWS: ['*'] }, Action: ['s3:GetObject'], Resource: [`arn:aws:s3:::${bucketName}/content/*`] }],
-    });
-    await client.setBucketPolicy(bucketName, policy);
+    // Bucket is created private. Files are served via short-lived signed URLs
+    // through getReadUrl(). Do NOT auto-apply a public-read policy here — it
+    // would silently expose every fresh-deploy bucket to the internet.
   }
 }
 

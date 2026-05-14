@@ -4,9 +4,36 @@ const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
-const { generateUserId } = require('../utils/userId');
+const { createUserWithGeneratedId } = require('../utils/userId');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
+const { Prisma } = require('@prisma/client');
+
+// Allowed forward transitions in the 7-stage admissions pipeline.
+// Skipping (e.g. RECEIVED → ACCEPTED) is forbidden; admins use /reactivate
+// to roll a row back to RECEIVED.
+const STAGE_TRANSITIONS = {
+  RECEIVED:            new Set(['DOCS_REVIEW', 'REJECTED']),
+  DOCS_REVIEW:         new Set(['INTERVIEW_SCHEDULED', 'REJECTED']),
+  INTERVIEW_SCHEDULED: new Set(['INTERVIEW_DONE', 'REJECTED']),
+  INTERVIEW_DONE:      new Set(['WAITLISTED', 'ACCEPTED', 'REJECTED']),
+  WAITLISTED:          new Set(['ACCEPTED', 'REJECTED']),
+  ACCEPTED:            new Set(['ENROLLED', 'REJECTED']),
+  REJECTED:            new Set([]),
+  ENROLLED:            new Set([]),
+};
+
+// Returns null if refs satisfy the precondition; otherwise an error message.
+// Requires at least one RECEIVED PASTORAL and one RECEIVED CHRISTIAN_LEADER.
+function referencesSatisfied(references) {
+  const received = (references || []).filter(r => r.status === 'RECEIVED');
+  const hasPastoral = received.some(r => r.refType === 'PASTORAL');
+  const hasChristian = received.some(r => r.refType === 'CHRISTIAN_LEADER');
+  if (!hasPastoral || !hasChristian) {
+    return 'At least one PASTORAL and one CHRISTIAN_LEADER reference must be RECEIVED.';
+  }
+  return null;
+}
 
 const admissionsAccess = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER');
 
@@ -189,19 +216,36 @@ router.get('/:id', authenticate, admissionsAccess, async (req, res, next) => {
 router.put('/:id/stage', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const { stage } = req.body;
-    const normalized = String(stage).toUpperCase();
+    const normalized = String(stage || '').toUpperCase();
     const applicant = await prisma.applicant.findUnique({
       where: { id: req.params.id }, include: { references: true },
     });
     if (!applicant) return res.status(404).json({ error: 'Applicant not found' });
 
-    if (['INTERVIEW_SCHEDULED', 'INTERVIEW_DONE'].includes(normalized)) {
-      const received = applicant.references.filter(r => r.status === 'RECEIVED').length >= 2;
-      if (!received) return res.status(400).json({ error: 'Both references required before interview stage' });
+    // Enforce the forward-only state machine. Backward moves go through /reactivate.
+    const allowed = STAGE_TRANSITIONS[applicant.pipelineStage];
+    if (!allowed) {
+      return res.status(400).json({ error: `Applicant is in terminal stage ${applicant.pipelineStage}.` });
+    }
+    if (!allowed.has(normalized)) {
+      return res.status(400).json({ error: `Invalid stage transition ${applicant.pipelineStage} → ${normalized}.` });
+    }
+
+    // Reference-type precondition: PASTORAL + CHRISTIAN_LEADER required from interview onwards.
+    if (['INTERVIEW_SCHEDULED', 'INTERVIEW_DONE', 'ACCEPTED'].includes(normalized)) {
+      const refErr = referencesSatisfied(applicant.references);
+      if (refErr) return res.status(400).json({ error: refErr });
+    }
+
+    const updateData = { pipelineStage: normalized };
+    // Record decision attribution where applicable.
+    if (['ACCEPTED', 'REJECTED', 'WAITLISTED'].includes(normalized)) {
+      updateData.decisionMakerId = req.user.id;
+      updateData.decisionAt = new Date();
     }
     const updated = await prisma.applicant.update({
       where: { id: req.params.id },
-      data: { pipelineStage: normalized },
+      data: updateData,
       include: { programme: { select: { name: true, code: true } } },
     });
     res.json({ applicant: flatten(updated) });
@@ -242,10 +286,30 @@ router.post('/:id/interview', authenticate, admissionsAccess, async (req, res, n
 // POST /api/admissions/:id/accept
 router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next) => {
   try {
+    // Validate eligibility BEFORE allocating a user-id slot. Critical:
+    //   (a) only applicants who finished an interview (or are on waitlist) can be accepted
+    //   (b) PASTORAL + CHRISTIAN_LEADER references must already be RECEIVED
+    //   (c) applicant must not already be converted
+    const eligibility = await prisma.applicant.findUnique({
+      where: { id: req.params.id },
+      include: { references: true },
+    });
+    if (!eligibility) return res.status(404).json({ error: 'Applicant not found' });
+    if (eligibility.convertedToUserId) {
+      return res.status(400).json({ error: 'Applicant already converted to a student account' });
+    }
+    const acceptableFrom = new Set(['INTERVIEW_DONE', 'WAITLISTED']);
+    if (!acceptableFrom.has(eligibility.pipelineStage)) {
+      return res.status(400).json({
+        error: `Applicant must be at INTERVIEW_DONE or WAITLISTED to accept (currently ${eligibility.pipelineStage}).`,
+      });
+    }
+    const refErr = referencesSatisfied(eligibility.references);
+    if (refErr) return res.status(400).json({ error: refErr });
+
     const settings = await prisma.systemSetting.findUnique({ where: { key: 'admissions' } });
     const deadlineDays = settings?.value?.acceptanceDeadlineDays || 14;
 
-    const userIdDisplay = await generateUserId('STUDENT');
     const tempPassword = require('crypto').randomBytes(8).toString('base64url').slice(0, 10) + 'A1!';
     const tempHash = await bcrypt.hash(tempPassword, 12);
     const offerExpires = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
@@ -261,41 +325,52 @@ router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next
       if (applicant.convertedToUserId) {
         throw Object.assign(new Error('Applicant already converted to a student account'), { status: 400 });
       }
+      // Re-check eligibility under the transaction (race-safe)
+      if (!acceptableFrom.has(applicant.pipelineStage)) {
+        throw Object.assign(new Error('Applicant stage changed; refusing to accept.'), { status: 409 });
+      }
 
       const fd = applicant.formData || {};
       const email = fd.email || `${applicant.applicationNo}@student.hmc.college`;
 
-      const newUser = await tx.user.create({
+      // studyMode is part of the applicant's profile decision — accept the form value
+      // only as fallback. Normalize OFFLINE/ONLINE.
+      const rawStudyMode = String(fd.studyMode || 'OFFLINE').toUpperCase();
+      const studyMode = (rawStudyMode === 'ONLINE') ? 'ONLINE' : 'OFFLINE';
+
+      // Create the user first with a retry-aware userIdDisplay generator.
+      const baseUser = await createUserWithGeneratedId('STUDENT', {
+        email: String(email).toLowerCase().trim(),
+        status: 'ACTIVE',
+        phone: fd.phone || null,
+      }, tx);
+
+      // Then attach auth + studentProfile (separate calls so the userIdDisplay retry
+      // path doesn't have to recreate nested data on collision).
+      await tx.userAuth.create({
         data: {
-          userIdDisplay,
-          role: 'STUDENT',
-          email: String(email).toLowerCase().trim(),
-          status: 'ACTIVE',
-          phone: fd.phone || null,
-          auth: {
-            create: {
-              passwordHash: await bcrypt.hash(uuidv4(), 12),
-              tempPasswordHash: tempHash,
-              tempPasswordExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            },
-          },
-          studentProfile: {
-            create: {
-              firstName: fd.firstName || '',
-              lastName: fd.lastName || '',
-              dob: fd.dob ? new Date(fd.dob) : new Date('2000-01-01'),
-              gender: fd.gender || 'unspecified',
-              nationality: fd.nationality || 'Indian',
-              studentType: applicant.studentType,
-              studyMode: String(fd.studyMode || 'OFFLINE').toUpperCase(),
-              programmeId: applicant.programmeId,
-              permanentAddress: fd.permanentAddress || null,
-              presentAddress: fd.presentAddress || null,
-            },
-          },
+          userId: baseUser.id,
+          passwordHash: await bcrypt.hash(uuidv4(), 12),
+          tempPasswordHash: tempHash,
+          tempPasswordExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         },
-        include: { studentProfile: true },
       });
+      const studentProfile = await tx.studentProfile.create({
+        data: {
+          userId: baseUser.id,
+          firstName: fd.firstName || '',
+          lastName: fd.lastName || '',
+          dob: fd.dob ? new Date(fd.dob) : new Date('2000-01-01'),
+          gender: fd.gender || 'unspecified',
+          nationality: fd.nationality || 'Indian',
+          studentType: applicant.studentType,
+          studyMode,
+          programmeId: applicant.programmeId,
+          permanentAddress: fd.permanentAddress || null,
+          presentAddress: fd.presentAddress || null,
+        },
+      });
+      const newUser = { ...baseUser, studentProfile };
 
       await tx.applicant.update({
         where: { id: req.params.id },
@@ -303,35 +378,40 @@ router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next
           pipelineStage: 'ACCEPTED',
           decision: 'accept',
           decisionAt: new Date(),
+          decisionMakerId: req.user.id,
           offerExpiresAt: offerExpires,
           convertedToUserId: newUser.id,
         },
       });
 
-      // Auto-apply fees inside the transaction
-      const studyMode = String(fd.studyMode || 'OFFLINE').toUpperCase();
+      // Auto-apply fees inside the transaction. Match by BOTH studyMode and studentType.
+      const isIntl = applicant.studentType === 'INTERNATIONAL';
       const applicableRules = ['ALL'];
       if (studyMode === 'OFFLINE') applicableRules.push('OFFLINE_ONLY');
       if (studyMode === 'ONLINE') applicableRules.push('ONLINE_ONLY');
       const autoFees = await tx.feeType.findMany({
         where: { isActive: true, autoApply: { in: applicableRules } },
       });
-      const isIntl = applicant.studentType === 'INTERNATIONAL';
-      if (newUser.studentProfile) {
-        for (const ft of autoFees) {
-          const amount = isIntl ? Number(ft.internationalAmount || ft.domesticAmount) : Number(ft.domesticAmount);
-          await tx.studentFeeLedger.create({
-            data: {
-              studentId: newUser.studentProfile.id,
-              feeTypeId: ft.id,
-              amount, balance: amount, waivedAmount: 0,
-              currency: isIntl ? 'USD' : 'INR',
-              status: 'UNPAID',
-              description: ft.name,
-              addedById: req.user.id,
-            },
-          });
-        }
+      for (const ft of autoFees) {
+        // Pick the amount column matching studentType. `null` is treated as "skip";
+        // a legitimate $0 fee is still applied. Use Prisma.Decimal so amounts are
+        // never coerced through JS Number.
+        const rawAmount = isIntl ? ft.internationalAmount : ft.domesticAmount;
+        if (rawAmount === null || rawAmount === undefined) continue;
+        const amount = new Prisma.Decimal(rawAmount);
+        await tx.studentFeeLedger.create({
+          data: {
+            studentId: studentProfile.id,
+            feeTypeId: ft.id,
+            amount,
+            balance: amount,
+            waivedAmount: new Prisma.Decimal(0),
+            currency: isIntl ? 'USD' : 'INR',
+            status: 'UNPAID',
+            description: ft.name,
+            addedById: req.user.id,
+          },
+        });
       }
 
       return { applicant, newUser };

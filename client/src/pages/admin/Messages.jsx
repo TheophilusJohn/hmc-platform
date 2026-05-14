@@ -23,7 +23,9 @@ const TAGS = ['{student_name}', '{balance_due}', '{due_date}', '{exam_date}', '{
 
 export default function Messages() {
   const [tab, setTab] = useState('compose');
-  const [form, setForm] = useState({ type: 'general', scope: 'all', subject: '', body: '', channels: { email: true, sms: false, whatsapp: false }, programmeId: '', batchId: '' });
+  // MessageType enum is UPPERCASE on the wire. Default to GENERAL_ANNOUNCEMENT
+  // so an admin who never touches the Type dropdown still submits a valid value.
+  const [form, setForm] = useState({ type: 'GENERAL_ANNOUNCEMENT', scope: 'all', subject: '', body: '', channels: { email: true, sms: false, whatsapp: false }, programmeId: '', batchId: '' });
   const [selectedStudentIds, setSelectedStudentIds] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
@@ -85,7 +87,7 @@ export default function Messages() {
         recipientScope: buildRecipientScope(),
       });
       setPreviewRecipients(null);
-      setForm({ type: 'general', scope: 'all', subject: '', body: '', channels: { email: true, sms: false, whatsapp: false }, programmeId: '', batchId: '' });
+      setForm({ type: 'GENERAL_ANNOUNCEMENT', scope: 'all', subject: '', body: '', channels: { email: true, sms: false, whatsapp: false }, programmeId: '', batchId: '' });
       setSelectedStudentIds([]);
       alert('Message queued for sending.');
     } catch (e) { alert('Send failed: ' + (e?.response?.data?.error || e.message)); }

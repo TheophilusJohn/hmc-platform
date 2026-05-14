@@ -20,7 +20,8 @@ router.get('/', authenticate, async (req, res, next) => {
       },
       orderBy: [{ academicYear: 'desc' }, { type: 'asc' }],
     });
-    res.json(semesters);
+    // Wrap per project convention (CLAUDE.md): lists as {semesters:[...]}.
+    res.json({ semesters });
   } catch (err) { next(err); }
 });
 

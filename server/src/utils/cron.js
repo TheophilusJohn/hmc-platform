@@ -36,24 +36,51 @@ function initCronJobs() {
 
       const today = nowInIST();
       const dueDate = istBusinessDate(today.year, today.monthIndex, 10);
+
+      // Idempotency window: any ledger row for this fee + student created on/after
+      // the 1st-of-month IST midnight counts as "already charged this month".
+      const monthStart = istBusinessDate(today.year, today.monthIndex, 1);
+
       let charged = 0;
+      let skipped = 0;
       for (const h of hostellers) {
         try {
-          await prisma.studentFeeLedger.create({
-            data: {
-              studentId: h.id,
-              feeTypeId: feeType.id,
-              amount: feeType.domesticAmount,
-              currency: 'INR',
-              balance: feeType.domesticAmount,
-              status: 'UNPAID',
-              dueDate,
-            },
+          // Currency and amount follow the student type — international hostellers
+          // are billed in USD off internationalAmount unless they opted into INR.
+          const isIntl = h.studentType === 'INTERNATIONAL' && !h.payInInrOverride;
+          const amount = isIntl ? feeType.internationalAmount : feeType.domesticAmount;
+          const currency = isIntl ? 'USD' : 'INR';
+
+          // Atomically check + insert: if a row for this student+feeType already
+          // exists with createdAt >= monthStart, skip. This is the per-row
+          // idempotency guard until a DB-level @@unique([studentId,feeTypeId,billingMonth])
+          // is added.
+          await prisma.$transaction(async (tx) => {
+            const existing = await tx.studentFeeLedger.findFirst({
+              where: {
+                studentId: h.id,
+                feeTypeId: feeType.id,
+                createdAt: { gte: monthStart },
+              },
+              select: { id: true },
+            });
+            if (existing) { skipped++; return; }
+            await tx.studentFeeLedger.create({
+              data: {
+                studentId: h.id,
+                feeTypeId: feeType.id,
+                amount,
+                currency,
+                balance: amount,
+                status: 'UNPAID',
+                dueDate,
+              },
+            });
+            charged++;
           });
-          charged++;
-        } catch (e) { /* skip duplicates */ }
+        } catch (e) { console.error('CRON hostel per-student failed:', e); }
       }
-      console.log(`CRON: Hostel fees charged for ${charged} students`);
+      console.log(`CRON: Hostel fees charged for ${charged} students (skipped ${skipped} already-charged)`);
     } catch (err) { console.error('CRON hostel charge failed:', err); }
   }, { timezone: TZ });
 

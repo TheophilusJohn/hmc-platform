@@ -3,14 +3,35 @@ import { PageWrapper, Card, Btn, Input } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
+const INITIAL = { studentId: '', amount: '', mode: 'CASH', notes: '' };
+
 export default function FeeRecording() {
-  const [form, setForm] = useState({ studentId: '', amount: '', mode: 'cash', notes: '' });
-  const { data: students } = useApi('/users?role=STUDENT&status=active');
+  const [form, setForm] = useState(INITIAL);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+  const { data: students } = useApi('/users?role=STUDENT&status=ACTIVE');
 
   const handleRecord = async () => {
-    await api.post('/payments/offline', form);
-    setForm({ studentId: '', amount: '', mode: 'cash', notes: '' });
-    alert('Payment recorded. Receipt generated.');
+    setError(null); setOk(null);
+    if (!form.studentId) return setError('Pick a student.');
+    const amount = Number(form.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return setError('Enter a positive amount.');
+    setSubmitting(true);
+    try {
+      const { data } = await api.post('/payments/offline', {
+        studentId: form.studentId,
+        amount,
+        mode: form.mode, // UPPERCASE — PaymentMode enum
+        notes: form.notes || null,
+      });
+      setOk(`Payment recorded. Receipt: ${data?.receiptNo || '(generated)'}`);
+      setForm(INITIAL);
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Failed to record payment.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -30,12 +51,21 @@ export default function FeeRecording() {
             <label style={{ fontSize: 13, fontWeight: 500, color: '#3D4450', display: 'block', marginBottom: 6 }}>Payment Mode</label>
             <select value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value }))}
               style={{ padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, width: '100%', background: '#fff' }}>
-              {[{ value: 'cash', label: 'Cash' }, { value: 'bank_transfer', label: 'Bank Transfer' }, { value: 'upi', label: 'UPI' }].map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {/* PaymentMode enum values are UPPERCASE on the wire. */}
+              <option value="CASH">Cash</option>
+              <option value="BANK_TRANSFER">Bank Transfer</option>
+              <option value="UPI">UPI</option>
             </select>
           </div>
           <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
         </div>
-        <Btn style={{ marginTop: 20 }} onClick={handleRecord}>Record Payment & Generate Receipt</Btn>
+
+        {error && <div style={{ marginTop: 14, padding: '10px 12px', background: '#FEF2F2', color: '#991B1B', borderRadius: 8, fontSize: 13 }}>{error}</div>}
+        {ok && <div style={{ marginTop: 14, padding: '10px 12px', background: '#ECFDF5', color: '#166534', borderRadius: 8, fontSize: 13 }}>{ok}</div>}
+
+        <Btn style={{ marginTop: 20 }} onClick={handleRecord} disabled={submitting}>
+          {submitting ? 'Recording…' : 'Record Payment & Generate Receipt'}
+        </Btn>
       </Card>
     </PageWrapper>
   );

@@ -22,14 +22,17 @@ async function computeBelowAttendance() {
 
 router.get('/stats', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const [activeSubjects, exceptionsPending, marksOverdueSems] = await Promise.all([
+    // NOTE: AcademicException model is not yet in schema — pending feature.
+    // See server/src/routes/exceptions.js stub. Report 0 to keep dashboard tile
+    // alive instead of crashing the whole route.
+    const [activeSubjects, marksOverdueSems] = await Promise.all([
       prisma.subject.count({ where: { status: 'active' } }),
-      prisma.academicException.count({ where: { status: 'PENDING' } }),
       prisma.semester.findMany({
         where: { marksDeadline: { lt: new Date() }, status: 'ACTIVE' },
         select: { subjects: { select: { enrollments: { where: { resultStatus: 'PENDING' }, select: { id: true } } } } },
       }),
     ]);
+    const exceptionsPending = 0;
     const marksOverdue = marksOverdueSems.reduce(
       (sum, sem) => sum + sem.subjects.reduce((a, sub) => a + sub.enrollments.length, 0),
       0
@@ -42,8 +45,7 @@ router.get('/stats', authenticate, adminOrTA, async (req, res, next) => {
 router.get('/pending-actions', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const items = [];
-    const excCount = await prisma.academicException.count({ where: { status: 'PENDING' } });
-    if (excCount > 0) items.push({ type: 'exceptions', severity: 'high', description: `${excCount} academic exception${excCount === 1 ? '' : 's'} awaiting review`, link: '/ta/exceptions' });
+    // AcademicException model not yet in schema — skip until enabled.
     const unassigned = await prisma.subject.count({ where: { facultyId: null, status: 'active' } });
     if (unassigned > 0) items.push({ type: 'unassigned', severity: 'medium', description: `${unassigned} subject${unassigned === 1 ? '' : 's'} without faculty`, link: '/ta/assignments' });
     const revCount = await prisma.revaluation.count({ where: { status: 'pending' } });
@@ -78,17 +80,18 @@ router.get('/grades', authenticate, adminOrTA, async (req, res, next) => {
       orderBy: [{ firstName: 'asc' }],
     });
 
-    // CGPA helper inline
-    function gpaFromMarks(t, ps) {
-      if (t < ps) return 0;
-      const pct = (t / 100) * 100; // simplified
+    // CGPA helper — scale marks to subject's own totalMarks, NOT a hard-coded 100.
+    function gpaFromMarks(totalScored, totalMarks, passMark) {
+      if (!totalMarks || totalMarks <= 0) return 0;
+      if (totalScored < passMark) return 0;
+      const pct = (totalScored / totalMarks) * 100;
       if (pct >= 90) return 10;
       if (pct >= 80) return 9;
       if (pct >= 70) return 8;
       if (pct >= 60) return 7;
       if (pct >= 50) return 6;
-      if (pct >= 45) return 5;
-      return 4;
+      if (pct >= 40) return 5;
+      return 0;
     }
 
     const studentRows = students.map(s => {
@@ -96,10 +99,11 @@ router.get('/grades', authenticate, adminOrTA, async (req, res, next) => {
       let credits = 0, weighted = 0;
       for (const e of s.enrollments) {
         const t = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-        if (['PUBLISHED', 'PASS', 'FAIL'].includes(e.resultStatus)) {
+        // ResultStatus enum is PASS|FAIL|PENDING|WITHHELD — 'PUBLISHED' is not valid.
+        if (['PASS', 'FAIL'].includes(e.resultStatus)) {
           marks[e.subjectId] = t;
           credits += e.subject.creditHours;
-          weighted += gpaFromMarks(t, e.subject.passMark) * e.subject.creditHours;
+          weighted += gpaFromMarks(t, e.subject.totalMarks, e.subject.passMark) * e.subject.creditHours;
         }
       }
       const cgpa = credits > 0 ? (weighted / credits).toFixed(2) : null;

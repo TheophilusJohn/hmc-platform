@@ -5,17 +5,32 @@ const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/rbac');
 
-// GET /api/settings/public - safe-to-expose settings (no auth required)
+// GET /api/settings/public - safe-to-expose settings (no auth required).
+// Returns feature-presence booleans (no secrets) so non-admin clients can drive
+// conditional UI through useFeatures(). The admin endpoint at GET /api/settings
+// returns the full keyed config and is admin-only.
 router.get('/public', async (req, res, next) => {
   try {
     const settings = await prisma.systemSetting.findMany({
-      where: { key: { in: ['razorpay', 'college_info'] } }
+      where: {
+        key: {
+          in: ['razorpay', 'college_info', 'sendgrid', 'communication_phone', 'wise'],
+        },
+      },
     });
     const map = Object.fromEntries(settings.map(s => [s.key, s.value]));
     res.json({
       razorpay_key_id: map.razorpay?.key_id || null,
       collegeName: map.college_info?.name || 'Harvest Mission College',
       shortName: map.college_info?.short_name || 'HMC',
+      features: {
+        hasRazorpay: !!(map.razorpay?.key_id && map.razorpay?.key_secret),
+        hasEmail: !!(map.sendgrid?.api_key),
+        hasSMS: !!(map.communication_phone?.msg91_key || map.communication_phone?.twilio_account_sid),
+        hasWhatsApp: !!(map.communication_phone?.whatsapp_business_id),
+        hasWise: !!(map.wise?.api_key),
+        hasPhone: !!(map.communication_phone?.phone_number),
+      },
     });
   } catch (err) { next(err); }
 });

@@ -3,9 +3,14 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
-const { adminOnly } = require('../middleware/rbac');
+const { adminOnly, requireRole } = require('../middleware/rbac');
 
-router.get('/', authenticate, async (req, res, next) => {
+// Staff who legitimately need to pick users from a list (admin pages, admissions
+// officer assigning interviewers, TA assigning faculty). STUDENT/FACULTY are
+// explicitly NOT allowed to browse the directory.
+const directoryReaders = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER');
+
+router.get('/', authenticate, directoryReaders, async (req, res, next) => {
   const { role } = req.query;
   if (!role) return next();
   try {

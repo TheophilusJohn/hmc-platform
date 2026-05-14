@@ -26,6 +26,12 @@ function generateToken(user, mustChangePassword = false) {
   );
 }
 
+// Windowed lockout: after MAX_FAILED_ATTEMPTS bad logins, account is locked for
+// LOCKOUT_MINUTES. The window auto-clears on next successful login or when the
+// lockedUntil timestamp passes — admin doesn't need to manually unlock.
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
+
 // POST /api/auth/login
 router.post('/login', async (req, res, next) => {
   try {
@@ -34,8 +40,11 @@ router.post('/login', async (req, res, next) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
+    // Normalize: emails are case-insensitive identifiers.
+    const normalizedEmail = String(email).trim().toLowerCase();
+
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
       include: { auth: true, studentProfile: true, facultyProfile: true },
     });
 
@@ -43,9 +52,10 @@ router.post('/login', async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Check account lock
-    if (user.auth.failedAttempts >= 5) {
-      return res.status(423).json({ error: 'Account locked after too many failed attempts. Contact Admin.' });
+    // Check account lock (windowed)
+    if (user.auth.lockedUntil && user.auth.lockedUntil > new Date()) {
+      const minutes = Math.ceil((user.auth.lockedUntil - new Date()) / 60000);
+      return res.status(423).json({ error: `Account temporarily locked. Try again in ${minutes} minute(s).` });
     }
 
     if (user.status === 'INACTIVE' || user.status === 'SUSPENDED') {
@@ -63,17 +73,21 @@ router.post('/login', async (req, res, next) => {
     const mainMatch = await bcrypt.compare(password, user.auth.passwordHash);
 
     if (!isTempPassword && !mainMatch) {
+      const nextFailed = (user.auth.failedAttempts || 0) + 1;
+      const lock = nextFailed >= MAX_FAILED_ATTEMPTS
+        ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
+        : null;
       await prisma.userAuth.update({
         where: { userId: user.id },
-        data: { failedAttempts: { increment: 1 } },
+        data: { failedAttempts: nextFailed, lockedUntil: lock },
       });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Reset failed attempts
+    // Reset failed attempts + clear any expired lock
     await prisma.userAuth.update({
       where: { userId: user.id },
-      data: { failedAttempts: 0, lastLogin: new Date() },
+      data: { failedAttempts: 0, lockedUntil: null, lastLogin: new Date() },
     });
 
     const token = generateToken(user, isTempPassword);
@@ -172,8 +186,16 @@ router.post('/forgot-password', async (req, res, next) => {
   try {
     const { email, userIdDisplay } = req.body;
 
+    // Must supply one identifier; without this guard `where: { userIdDisplay: undefined }`
+    // matches the FIRST user in the DB and the route would trigger a reset against them.
+    const normEmail = email ? String(email).trim().toLowerCase() : null;
+    const normId = userIdDisplay ? String(userIdDisplay).trim() : null;
+    if (!normEmail && !normId) {
+      return res.status(400).json({ error: 'Provide an email or user ID.' });
+    }
+
     const user = await prisma.user.findFirst({
-      where: email ? { email } : { userIdDisplay },
+      where: normEmail ? { email: normEmail } : { userIdDisplay: normId },
       include: { auth: true },
     });
 

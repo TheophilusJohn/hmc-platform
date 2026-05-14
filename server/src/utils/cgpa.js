@@ -26,47 +26,70 @@ function percentToGrade(percent) {
 }
 
 /**
- * Calculate SGPA for a set of subject results
+ * Calculate SGPA for a set of subject results.
+ * CREDIT_TRANSFER (and grade 'EX') rows are excluded from the CGPA average
+ * but their credits ARE earned — `creditsEarned` includes them so the marksheet
+ * shows the right semester credit load.
  * @param {Array} enrollments - [{ grade, creditHours, enrollmentType }]
- * @returns { sgpa, totalCredits, earnedCredits }
+ * @returns { sgpa, totalCredits, creditsEarned, transferCredits }
  */
 function calculateSGPA(enrollments) {
   let totalWeightedPoints = 0;
-  let totalCredits = 0;
-  let earnedCredits = 0;
+  let totalCredits = 0;       // credits counting toward SGPA (non-CT)
+  let creditsEarned = 0;      // credits the student has earned (incl. CT)
+  let transferCredits = 0;    // credit-transfer credits, displayed separately
 
   for (const e of enrollments) {
-    if (e.enrollmentType === 'CREDIT_TRANSFER') continue; // EX not in CGPA
+    const credits = e.creditHours || 0;
+    const isTransfer = e.enrollmentType === 'CREDIT_TRANSFER' || e.grade === 'EX';
+
+    if (isTransfer) {
+      transferCredits += credits;
+      creditsEarned += credits;
+      continue;
+    }
     const points = GRADE_POINTS[e.grade] ?? 0;
-    totalWeightedPoints += points * e.creditHours;
-    totalCredits += e.creditHours;
-    if (e.grade !== 'F') earnedCredits += e.creditHours;
+    totalWeightedPoints += points * credits;
+    totalCredits += credits;
+    if (e.grade && e.grade !== 'F') creditsEarned += credits;
   }
 
   const sgpa = totalCredits > 0
     ? Math.round((totalWeightedPoints / totalCredits) * 100) / 100
     : 0;
 
-  return { sgpa, totalCredits, earnedCredits };
+  return { sgpa, totalCredits, creditsEarned, transferCredits };
 }
 
 /**
- * Calculate cumulative CGPA across multiple semesters
- * @param {Array} allEnrollments - all enrollments across all semesters
+ * Calculate cumulative CGPA across multiple semesters.
+ * Excludes CREDIT_TRANSFER rows AND any row with grade 'EX'.
+ * Skips rows with no grade yet (PENDING enrollments).
+ * For failed arrears: if there's a passing retake in the dataset for the same
+ * subject, prefer the retake; otherwise include the F.
  */
 function calculateCGPA(allEnrollments) {
+  // Index passing retakes by subjectId so failed arrears can be replaced.
+  const passingRetakeBySubject = new Map();
+  for (const e of allEnrollments) {
+    if (e.isArrear && e.grade && e.grade !== 'F' && e.enrollmentType !== 'CREDIT_TRANSFER') {
+      passingRetakeBySubject.set(e.subjectId, e);
+    }
+  }
+
   let totalWeightedPoints = 0;
   let totalCredits = 0;
 
   for (const e of allEnrollments) {
     if (e.enrollmentType === 'CREDIT_TRANSFER') continue;
-    if (!e.grade || e.grade === 'F' && e.isArrear) {
-      // For arrear: use best grade or retake grade per admin config
-      continue;
-    }
+    if (e.grade === 'EX') continue;
+    if (!e.grade) continue; // PENDING — don't count
+    // If this is the original failed attempt and a passing retake exists, skip it.
+    if (e.grade === 'F' && !e.isArrear && passingRetakeBySubject.has(e.subjectId)) continue;
+
     const points = GRADE_POINTS[e.grade] ?? 0;
-    totalWeightedPoints += points * e.creditHours;
-    totalCredits += e.creditHours;
+    totalWeightedPoints += points * (e.creditHours || 0);
+    totalCredits += (e.creditHours || 0);
   }
 
   return totalCredits > 0

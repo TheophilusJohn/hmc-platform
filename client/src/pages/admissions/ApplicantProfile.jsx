@@ -78,7 +78,11 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
           {canAdvance && nextStage && (
             <Btn size="sm" onClick={advance} disabled={loading}>Advance → {STAGE_LABELS[nextStage]}</Btn>
           )}
-          {['RECEIVED','DOCS_REVIEW','INTERVIEW_SCHEDULED','INTERVIEW_DONE','WAITLISTED'].includes(applicant.pipelineStage) && (
+          {/* Accept is only legal from INTERVIEW_DONE or WAITLISTED — and the server
+              additionally requires both references RECEIVED. Hiding the button on
+              earlier stages stops officers from issuing a real student account
+              for an applicant that hasn't been screened. */}
+          {['INTERVIEW_DONE','WAITLISTED'].includes(applicant.pipelineStage) && (
             <Btn size="sm" variant="success" onClick={accept} disabled={loading}>Accept</Btn>
           )}
           {applicant.pipelineStage !== 'ENROLLED' && applicant.pipelineStage !== 'REJECTED' && (

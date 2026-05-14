@@ -71,7 +71,26 @@ router.post('/subjects/:id/attendance', authenticate, facultyOrAbove, async (req
 
 router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    const record = await prisma.attendance.update({ where: { id: req.params.id }, data: req.body });
+    const existing = await prisma.attendance.findUnique({
+      where: { id: req.params.id }, select: { subjectId: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'Attendance record not found' });
+    // For class attendance (subjectId present), require the actor to teach the subject.
+    // For chapel (subjectId null), only admin/TA may edit.
+    if (existing.subjectId) {
+      if (!await canAccessSubject(req.user, existing.subjectId)) {
+        return res.status(403).json({ error: 'Not assigned to this subject' });
+      }
+    } else if (!['FULL_ADMIN', 'TEACHER_ADMIN'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only admin/TA can edit chapel attendance' });
+    }
+    // Whitelist editable fields — never let the caller rewrite subjectId/studentId/date.
+    const { status, sessionType, notes } = req.body;
+    const data = {};
+    if (status !== undefined) data.status = String(status).toUpperCase();
+    if (sessionType !== undefined) data.sessionType = String(sessionType).toUpperCase();
+    if (notes !== undefined) data.notes = notes;
+    const record = await prisma.attendance.update({ where: { id: req.params.id }, data });
     res.json(record);
   } catch (err) { next(err); }
 });

@@ -104,12 +104,30 @@ router.get('/:id/gradebook', authenticate, facultyOrAbove, async (req, res, next
       where: { subjectId: req.params.id },
       include: {
         student: { select: { id: true, firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } },
-        submissions: { where: { exam: { subjectId: req.params.id } }, include: { exam: { select: { id: true } } } },
       },
     });
+
+    // Submissions aren't a relation on StudentSubjectEnrollment — query them
+    // separately and index by (examId, studentId).
+    const examIds = exams.map(x => x.id);
+    const studentIds = enrollments.map(e => e.student.id);
+    const submissions = examIds.length && studentIds.length
+      ? await prisma.submission.findMany({
+          where: { examId: { in: examIds }, studentId: { in: studentIds } },
+          select: { examId: true, studentId: true, marksObtained: true },
+        })
+      : [];
+    const subMap = new Map();
+    for (const s of submissions) {
+      subMap.set(`${s.studentId}:${s.examId}`, s.marksObtained);
+    }
+
     const studentRows = enrollments.map(e => {
       const marks = {};
-      for (const s of e.submissions) { if (s.marksObtained !== null) marks[s.exam.id] = s.marksObtained; }
+      for (const x of exams) {
+        const m = subMap.get(`${e.student.id}:${x.id}`);
+        if (m !== undefined && m !== null) marks[x.id] = m;
+      }
       const total = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
       const pct = subject.totalMarks > 0 ? (total / subject.totalMarks) * 100 : 0;
       const isPub = ['PASS', 'FAIL'].includes(e.resultStatus);
@@ -126,20 +144,32 @@ router.get('/:id/gradebook', authenticate, facultyOrAbove, async (req, res, next
 router.get('/:id/revaluation-requests', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     if (!await canAccess(req.user, req.params.id)) return res.status(403).json({ error: 'Access denied' });
+    // Revaluation has no `subject` relation in schema, nor a `createdAt` field —
+    // those are `subjectId` (string) + `requestedAt`. Resolve the subject manually.
+    const subject = await prisma.subject.findUnique({
+      where: { id: req.params.id },
+      select: { name: true, totalMarks: true },
+    });
     const requests = await prisma.revaluation.findMany({
       where: { subjectId: req.params.id, status: 'pending' },
       include: {
         student: { select: { firstName: true, lastName: true, user: { select: { userIdDisplay: true } } } },
-        subject: { select: { name: true, totalMarks: true } },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { requestedAt: 'desc' },
     });
     res.json({
       requests: requests.map(r => ({
         id: r.id, studentId: r.studentId,
         studentName: `${r.student.firstName} ${r.student.lastName}`,
-        examTitle: r.subject.name, currentMarks: r.currentMarks, newMarks: r.newMarks,
-        totalMarks: r.subject.totalMarks, reason: r.reason, status: r.status, createdAt: r.createdAt,
+        examTitle: subject?.name || '',
+        // Revaluation schema field is `originalMarks` (not `currentMarks`) and
+        // `notes` (not `reason`).
+        currentMarks: r.originalMarks,
+        newMarks: r.newMarks,
+        totalMarks: subject?.totalMarks ?? null,
+        reason: r.notes,
+        status: r.status,
+        requestedAt: r.requestedAt,
       })),
     });
   } catch (err) { next(err); }

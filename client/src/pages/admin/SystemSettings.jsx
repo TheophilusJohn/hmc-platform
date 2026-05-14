@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { PageWrapper, Card, Btn, Input, Tabs } from '../../components/common';
+import { PageWrapper, Card, Btn, Input, Tabs, Table } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 

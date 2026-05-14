@@ -9,6 +9,28 @@ const minioService = require('../services/minio.service');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
+// MCQ answer normalization — see submissions.js for rationale.
+function normalizeMcqAnswer(raw) {
+  if (raw === null || raw === undefined) return [];
+  let value = raw;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try { value = JSON.parse(trimmed); } catch (_e) { value = trimmed; }
+    } else {
+      value = trimmed;
+    }
+  }
+  if (!Array.isArray(value)) value = [value];
+  return value.map(v => String(v).trim()).filter(v => v.length).sort();
+}
+function mcqIsCorrect(studentAnswer, correctAnswer) {
+  const a = normalizeMcqAnswer(studentAnswer);
+  const b = normalizeMcqAnswer(correctAnswer);
+  if (a.length !== b.length || a.length === 0) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
 // Verifies the calling student owns this submission.
 async function requireSubmissionOwner(req, res, next) {
   try {
@@ -136,8 +158,7 @@ router.post('/submissions/:id/submit', authenticate, requireSubmissionOwner, asy
     let autoMarks = 0;
     const mcqQuestions = submission.exam.questions.filter(q => q.type === 'MCQ');
     for (const q of mcqQuestions) {
-      const studentAnswer = answers?.[q.id];
-      if (studentAnswer === q.correctAnswer) autoMarks += q.marks;
+      if (mcqIsCorrect(answers?.[q.id], q.correctAnswer)) autoMarks += q.marks;
     }
 
     const hasWritten = submission.exam.questions.some(q => q.type !== 'MCQ');

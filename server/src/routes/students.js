@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
-const { facultyOrAbove } = require('../middleware/rbac');
+const { facultyOrAbove, requireRole } = require('../middleware/rbac');
 
 function gradeFromCgpa(n) {
   if (n == null) return null;
@@ -26,7 +26,10 @@ router.get('/', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
     const { mine, search, batchId, studyMode } = req.query;
     const where = {};
-    if (mine === 'true') {
+    // FACULTY can ONLY see students they teach — the `mine` flag is mandatory
+    // for that role. (Admin/TA can opt in with mine=true; otherwise see all.)
+    const forceMine = req.user.role === 'FACULTY' || mine === 'true';
+    if (forceMine) {
       const fp = await prisma.facultyProfile.findUnique({ where: { userId: req.user.id } });
       if (!fp) return res.json({ students: [] });
       where.enrollments = { some: { subject: { facultyId: fp.id } } };
@@ -130,7 +133,8 @@ router.get('/:id/academic-summary', authenticate, facultyOrAbove, async (req, re
 
 
 // GET /api/students/:id/ledger - admin Finance view
-router.get('/:id/ledger', authenticate, facultyOrAbove, async (req, res, next) => {
+// FACULTY has no business seeing fee ledgers; restrict to admin/TA/admissions.
+router.get('/:id/ledger', authenticate, requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER'), async (req, res, next) => {
   try {
     const sp = await prisma.studentProfile.findUnique({ where: { id: req.params.id } });
     if (!sp) return res.status(404).json({ error: 'Student not found' });

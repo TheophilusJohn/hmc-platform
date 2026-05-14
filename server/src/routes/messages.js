@@ -18,7 +18,10 @@ function personalise(template, data) {
     .replace(/{programme}/g, data.programme || '');
 }
 
-router.get('/', authenticate, async (req, res, next) => {
+// Messages contain recipient scopes, sender info, and templated bodies. Limit
+// list access to staff who legitimately compose/track messages.
+const messageReaders = require('../middleware/rbac').requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER', 'FACULTY');
+router.get('/', authenticate, messageReaders, async (req, res, next) => {
   try {
     const messages = await prisma.message.findMany({
       where: req.user.role === 'FACULTY' ? { senderId: req.user.id } : undefined,
@@ -38,7 +41,13 @@ const MESSAGE_BODY_MAX = 20 * 1024;
 router.post('/', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const { subject, body, channels, recipientScope, templateId } = req.body;
-    const type = req.body.type ? String(req.body.type).toUpperCase() : undefined;
+    // MessageType is required by the schema; rejecting here gives a clearer
+    // error than the Prisma enum-validation failure.
+    const MESSAGE_TYPES = new Set(['FEE_REMINDER', 'EXAM_REMINDER', 'ASSIGNMENT_DEADLINE', 'GENERAL_ANNOUNCEMENT']);
+    const type = req.body.type ? String(req.body.type).toUpperCase() : null;
+    if (!type || !MESSAGE_TYPES.has(type)) {
+      return res.status(400).json({ error: `type is required and must be one of: ${[...MESSAGE_TYPES].join(', ')}` });
+    }
     if (subject && String(subject).length > MESSAGE_SUBJECT_MAX) {
       return res.status(400).json({ error: `Subject exceeds ${MESSAGE_SUBJECT_MAX} character limit` });
     }

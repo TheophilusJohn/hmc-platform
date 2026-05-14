@@ -23,6 +23,18 @@ const REDACTED_KEYS = new Set([
   'token', 'resetToken', 'jwt',
 ]);
 
+// PII fields — never write these to the immutable audit log. The audit log is
+// for actor + action + tableName + recordId; downstream investigators can re-fetch
+// the record by recordId rather than read PII back out of the log.
+const PII_KEYS = new Set([
+  'email', 'phone', 'aadhaarNumber', 'aadhaar',
+  'firstName', 'lastName', 'dob', 'dateOfBirth',
+  'emergencyContact', 'presentAddress', 'permanentAddress',
+  'bankAccountNumber', 'accountNumber', 'ifsc', 'routing', 'swift',
+  'formData', // applicant form blob
+  'name', 'fullName',
+]);
+
 function redact(value, depth = 0) {
   if (value == null || depth > 4) return value;
   if (Array.isArray(value)) return value.map(v => redact(v, depth + 1));
@@ -30,6 +42,7 @@ function redact(value, depth = 0) {
   const out = {};
   for (const [k, v] of Object.entries(value)) {
     if (REDACTED_KEYS.has(k)) out[k] = '[REDACTED]';
+    else if (PII_KEYS.has(k)) out[k] = '[PII_OMITTED]';
     else out[k] = redact(v, depth + 1);
   }
   return out;

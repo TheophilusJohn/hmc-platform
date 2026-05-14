@@ -6,21 +6,28 @@ const TAB_SWITCH_LIMIT = 3;
 const AUTOSAVE_INTERVAL = 30000; // 30s
 
 // ─── Countdown timer ────────────────────────────────────────────────────────
-function Timer({ seconds, onExpire }) {
-  const [left, setLeft] = useState(seconds);
+// Anchored to a server-supplied `endsAtMs` epoch so a page refresh cannot reset
+// the clock to the full duration (previous bug: timer seeded from `exam.duration`
+// on every mount, letting students extend their exam indefinitely).
+function Timer({ endsAtMs, onExpire }) {
+  const compute = () => Math.max(0, Math.floor((endsAtMs - Date.now()) / 1000));
+  const [left, setLeft] = useState(compute);
   const timerRef = useRef(null);
   const onExpireRef = useRef(onExpire);
   useEffect(() => { onExpireRef.current = onExpire; }, [onExpire]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
-      setLeft(prev => {
-        if (prev <= 1) { clearInterval(timerRef.current); onExpireRef.current?.(); return 0; }
-        return prev - 1;
-      });
+      const remaining = compute();
+      setLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(timerRef.current);
+        onExpireRef.current?.();
+      }
     }, 1000);
     return () => clearInterval(timerRef.current);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endsAtMs]);
 
   const h = Math.floor(left / 3600);
   const m = Math.floor((left % 3600) / 60);
@@ -156,6 +163,7 @@ export default function ExamTaking() {
   const [submissionId, setSubmissionId] = useState(null);
   const [autoSubmitted, setAutoSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [endsAtMs, setEndsAtMs] = useState(null); // server-anchored deadline
   const autosaveRef = useRef(null);
   const tabRef = useRef(0);
   // Refs so async listeners always read the latest values without re-binding.
@@ -168,13 +176,19 @@ export default function ExamTaking() {
     api.get(`/exams/${examId}`).then(({ data }) => setExam(data.exam || data));
   }, [examId]);
 
-  // Start exam session — server returns { submission, exam: { ..., questions } }
+  // Start exam session — server returns { submission, exam: { ..., questions } }.
+  // Compute the absolute deadline from submission.startedAt + exam.duration so a
+  // page refresh re-anchors the timer to the SAME wall-clock end instead of
+  // resetting it to the full duration.
   const startExam = useCallback(async () => {
     const { data } = await api.post(`/exam-session/${examId}/start`);
     const subId = data.submission?.id;
     setSubmissionId(subId);
     setQuestions(data.exam?.questions || []);
     if (data.exam) setExam(data.exam);
+    const startedAt = data.submission?.startedAt ? new Date(data.submission.startedAt).getTime() : Date.now();
+    const durationMs = (data.exam?.durationMins || data.exam?.duration || 0) * 60 * 1000;
+    setEndsAtMs(startedAt + durationMs);
     setPhase('taking');
     if (subId) localStorage.setItem('hmc_exam_session', subId);
   }, [examId]);
@@ -272,7 +286,7 @@ export default function ExamTaking() {
         <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>
           {Object.keys(answers).length}/{questions.length} answered
         </div>
-        <Timer seconds={exam.duration * 60} onExpire={() => submitExam(true)} />
+        {endsAtMs && <Timer endsAtMs={endsAtMs} onExpire={() => submitExam(true)} />}
         <button onClick={handleConfirmSubmit} disabled={submitting}
           style={{ padding: '8px 18px', background: '#C9920A', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'DM Sans', fontSize: 14, fontWeight: 700, cursor: submitting ? 'not-allowed' : 'pointer' }}>
           {submitting ? 'Submitting…' : 'Submit'}
@@ -291,7 +305,10 @@ export default function ExamTaking() {
                   {current + 1}
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 16, fontWeight: 500, color: '#1A1D23', lineHeight: 1.5 }}>{q.question}</div>
+                  {/* Server stores the question prompt as `questionText` (Question.questionText
+                      in schema). The previous code read `q.question`, which was undefined,
+                      and rendered every question with a blank body. */}
+                  <div style={{ fontSize: 16, fontWeight: 500, color: '#1A1D23', lineHeight: 1.5 }}>{q.questionText || q.question}</div>
                   <div style={{ fontSize: 12, color: '#7B8494', marginTop: 4 }}>[{q.marks} mark{q.marks > 1 ? 's' : ''}]</div>
                 </div>
                 <button onClick={() => toggleFlag(q.id)}
@@ -300,10 +317,10 @@ export default function ExamTaking() {
                 </button>
               </div>
 
-              {/* MCQ options */}
-              {(q.type === 'mcq' || q.type === 'true_false') && (
+              {/* MCQ options. QuestionType enum is UPPERCASE on the wire. */}
+              {q.type === 'MCQ' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 540 }}>
-                  {(q.options || (q.type === 'true_false' ? ['True', 'False'] : [])).map((opt, i) => {
+                  {(q.options || []).map((opt, i) => {
                     const val = String(i);
                     const selected = answers[q.id] === val;
                     return (
@@ -319,8 +336,8 @@ export default function ExamTaking() {
                 </div>
               )}
 
-              {/* Written answer */}
-              {(q.type === 'written' || q.type === 'short') && (
+              {/* Written / scripture answer */}
+              {(q.type === 'WRITTEN' || q.type === 'SCRIPTURE') && (
                 <div>
                   <textarea
                     value={answers[q.id] || ''}
@@ -328,20 +345,21 @@ export default function ExamTaking() {
                     onCopy={e => e.preventDefault()}
                     onPaste={e => e.preventDefault()}
                     placeholder="Type your answer here…"
-                    style={{ width: '100%', minHeight: q.type === 'written' ? 240 : 100, padding: '12px 16px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, fontFamily: "'DM Sans',sans-serif", resize: 'vertical', boxSizing: 'border-box', outline: 'none', lineHeight: 1.6 }}
+                    style={{ width: '100%', minHeight: 240, padding: '12px 16px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, fontFamily: "'DM Sans',sans-serif", resize: 'vertical', boxSizing: 'border-box', outline: 'none', lineHeight: 1.6 }}
                   />
                   <div style={{ fontSize: 11, color: '#A0A8B4', marginTop: 4 }}>{(answers[q.id] || '').length} characters</div>
                 </div>
               )}
 
               {/* File upload */}
-              {q.type === 'file_upload' && (
+              {q.type === 'FILE_UPLOAD' && (
                 <div style={{ padding: '24px', border: '2px dashed #DDE1E7', borderRadius: 8, textAlign: 'center' }}>
                   <input type="file" onChange={async (e) => {
                     if (!submissionId || !e.target.files[0]) return;
                     const fd = new FormData();
                     fd.append('file', e.target.files[0]);
-                    const { data } = await api.post(`/exam-session/submissions/${submissionId}/upload`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                    // Don't set Content-Type manually — axios needs to compute the multipart boundary.
+                    const { data } = await api.post(`/exam-session/submissions/${submissionId}/upload`, fd);
                     setAnswer(q.id, data.url);
                   }} />
                   {answers[q.id] && <div style={{ marginTop: 8, fontSize: 13, color: '#166534' }}>✅ File uploaded</div>}

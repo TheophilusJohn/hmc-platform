@@ -21,14 +21,16 @@ const WAIVER_TYPES = [
 ];
 const WAIVER_REASONS = ['Scholarship', 'Financial hardship', 'Merit award', 'Staff/faculty dependent', 'Ministry/work scholarship', 'Custom'];
 
+// The /api/users endpoint (userExtras) returns a flat user shape with
+// firstName/lastName/studentProfileId; nested `studentProfile` is NOT
+// included. Reading u.studentProfile leaves the picker permanently empty.
 const profileFromUser = (u) => {
-  const sp = u.studentProfile;
-  if (!sp) return null;
+  if (!u?.studentProfileId) return null;
   return {
-    id: sp.id,
+    id: u.studentProfileId,
     userIdDisplay: u.userIdDisplay,
-    name: `${sp.firstName || ''} ${sp.lastName || ''}`.trim() || u.email,
-    programme: sp.programme?.name || '',
+    name: `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email,
+    programme: '', // not in the flat shape; admin will see name + ID in the picker
   };
 };
 
@@ -318,15 +320,12 @@ export default function Finance() {
         <Modal title="Select Student" onClose={() => setPickerOpen(false)} wide>
           <SearchInput value={pickerSearch} onChange={setPickerSearch} placeholder="Search by name, ID or email..." style={{ marginBottom: 12 }} />
           <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid #DDE1E7', borderRadius: 8 }}>
-            {(pickerStudents?.users || []).filter(u => u.studentProfile).map(u => {
-              const sp = u.studentProfile;
-              return (
-                <div key={u.id} onClick={() => handlePickStudent(u)} style={{ padding: '10px 12px', borderBottom: '1px solid #EEF4FA', cursor: 'pointer' }}>
-                  <div style={{ fontWeight: 500 }}>{sp.firstName} {sp.lastName}</div>
-                  <div style={{ fontSize: 12, color: '#7B8494' }}>{u.userIdDisplay} · {u.email}{sp.programme?.name && ` · ${sp.programme.name}`}</div>
-                </div>
-              );
-            })}
+            {(pickerStudents?.users || []).filter(u => u.studentProfileId).map(u => (
+              <div key={u.id} onClick={() => handlePickStudent(u)} style={{ padding: '10px 12px', borderBottom: '1px solid #EEF4FA', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 500 }}>{u.firstName} {u.lastName}</div>
+                <div style={{ fontSize: 12, color: '#7B8494' }}>{u.userIdDisplay} · {u.email}</div>
+              </div>
+            ))}
             {((pickerStudents?.users || []).filter(u => u.studentProfile).length === 0) && (
               <div style={{ padding: 16, textAlign: 'center', color: '#7B8494', fontSize: 13 }}>
                 {pickerSearch ? 'No students match that search.' : 'Start typing to search students.'}

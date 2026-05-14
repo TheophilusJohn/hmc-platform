@@ -9,10 +9,26 @@ function getRazorpayInstance() {
   return new Razorpay({ key_id, key_secret });
 }
 
+const ALLOWED_CURRENCIES = new Set(['INR', 'USD']);
+
 async function createRazorpayOrder(amountInPaise, currency = 'INR', receiptNo) {
+  // Hard-validate: caller MUST pass integer minor units (paise/cents). Rupees-as-float
+  // silently rounds in Razorpay and creates wrong-amount orders.
+  if (!Number.isInteger(amountInPaise)) {
+    throw new Error(`createRazorpayOrder: amount must be an integer in the smallest unit (paise/cents); got ${amountInPaise}`);
+  }
+  if (amountInPaise <= 0) {
+    throw new Error(`createRazorpayOrder: amount must be > 0; got ${amountInPaise}`);
+  }
+  if (!ALLOWED_CURRENCIES.has(currency)) {
+    throw new Error(`createRazorpayOrder: unsupported currency ${currency}`);
+  }
+  if (!receiptNo || typeof receiptNo !== 'string') {
+    throw new Error('createRazorpayOrder: receiptNo is required');
+  }
   const razorpay = getRazorpayInstance();
   const order = await razorpay.orders.create({
-    amount: Math.round(amountInPaise),
+    amount: amountInPaise,
     currency,
     receipt: receiptNo,
     payment_capture: 1,

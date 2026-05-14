@@ -116,7 +116,16 @@ router.post('/trigger/:applicantId', authenticate, require('../middleware/rbac')
     if (!referrerProfile) return res.json({ triggered: false, reason: 'Referrer not found' });
 
     const formData = applicant.formData || {};
-    if (formData.email === referrerProfile.user.email) {
+    // Normalize both sides — a plaintext form email vs a stored email compared
+    // strictly will frequently fail to match because of case/whitespace, defeating
+    // the guard. Also block if the applicant has already been converted to the
+    // referrer's own user.
+    const applicantEmail = String(formData.email || '').trim().toLowerCase();
+    const referrerEmail = String(referrerProfile.user?.email || '').trim().toLowerCase();
+    const sameEmail = applicantEmail && referrerEmail && applicantEmail === referrerEmail;
+    const sameUser = applicant.convertedToUserId && referrerProfile.user?.id
+      && applicant.convertedToUserId === referrerProfile.user.id;
+    if (sameEmail || sameUser) {
       return res.json({ triggered: false, reason: 'Self-referral prevented' });
     }
 

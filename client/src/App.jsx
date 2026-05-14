@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 // Lazy load portals
 const Login = lazy(() => import('./pages/Login'));
 const ChangePassword = lazy(() => import('./pages/ChangePassword'));
+const ResetPassword = lazy(() => import('./pages/public/ResetPassword'));
 
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout'));
 const AdminDashboard = lazy(() => import('./pages/admin/Dashboard'));
@@ -73,12 +74,22 @@ const ROLE_HOME = {
   STUDENT: '/student',
 };
 
+// JWTs are base64url-encoded — convert to standard base64 before atob so payloads
+// containing `-`/`_` chars don't throw and silently log the user out.
+function decodeJwtPayload(token) {
+  const b64url = token.split('.')[1];
+  if (!b64url) return null;
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+  return JSON.parse(atob(padded));
+}
+
 function readSession() {
   const token = localStorage.getItem('hmc_token');
   if (!token) return null;
   try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    if (payload.exp * 1000 < Date.now()) {
+    const payload = decodeJwtPayload(token);
+    if (!payload || payload.exp * 1000 < Date.now()) {
       localStorage.removeItem('hmc_token');
       localStorage.removeItem('hmc_user');
       return null;
@@ -138,6 +149,7 @@ export default function App() {
           <Route path="/references/:token" element={<ReferenceForm />} />
           <Route path="/verify/:uuid" element={<TranscriptVerify />} />
           <Route path="/certificates/verify/:uuid" element={<TranscriptVerify type="certificate" />} />
+          <Route path="/reset-password/:token" element={<ResetPassword />} />
 
           {/* Authenticated — any role */}
           <Route path="/change-password" element={<AuthGuard><ChangePassword /></AuthGuard>} />

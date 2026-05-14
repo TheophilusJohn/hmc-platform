@@ -55,7 +55,8 @@ router.get('/my-subjects', authenticate, async (req, res, next) => {
         if (a.status === 'PRESENT') attMap[a.subjectId].present += a._count._all;
       }
       const subjects = enrollments.map(e => {
-        const contentCount = e.subject.units.reduce((s, u) => s + u.contents.length, 0);
+        // Schema relation on CourseUnit is `content` (singular).
+        const contentCount = e.subject.units.reduce((s, u) => s + (u.content?.length || 0), 0);
         const a = attMap[e.subject.id];
         return {
           id: e.subject.id, code: e.subject.code, name: e.subject.name,

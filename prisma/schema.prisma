@@ -326,6 +326,7 @@ model UserAuth {
   tempPasswordExpires DateTime?
   lastLogin           DateTime?
   failedAttempts      Int       @default(0)
+  lockedUntil         DateTime? // null = not locked; in past = expired lock; in future = active lockout
   twoFaSecret         String?   // ENCRYPTED
   resetToken          String?
   resetTokenExpires   DateTime?
@@ -705,7 +706,7 @@ model Revaluation {
 
 model Attendance {
   id          String           @id @default(uuid())
-  subjectId   String
+  subjectId   String?          // NULL for CHAPEL/PRAYER (not subject-bound)
   studentId   String
   date        DateTime         @db.Date
   status      AttendanceStatus
@@ -714,7 +715,7 @@ model Attendance {
   notes       String?
   createdAt   DateTime         @default(now())
 
-  subject     Subject          @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  subject     Subject?         @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   student     StudentProfile   @relation(fields: [studentId], references: [id], onDelete: Restrict)
   markedBy    FacultyProfile?  @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: SetNull)
 
@@ -807,19 +808,20 @@ model Payment {
 }
 
 model Waiver {
-  id              String       @id @default(uuid())
-  studentId       String
-  ledgerId        String?
-  waiverType      WaiverType
-  amountOrPercent Decimal      @db.Decimal(10, 2)
-  reason          WaiverReason
-  customReason    String?
-  validUntil      DateTime?
-  appliedById     String?
-  appliedAt       DateTime     @default(now())
-  revokedAt       DateTime?
-  revokeReason    String?
-  notifyStudent   Boolean      @default(true)
+  id                  String       @id @default(uuid())
+  studentId           String
+  ledgerId            String?
+  waiverType          WaiverType
+  amountOrPercent     Decimal      @db.Decimal(10, 2)
+  actualWaivedAmount  Decimal?     @db.Decimal(10, 2) // amount actually deducted from ledger at apply-time; null = legacy row
+  reason              WaiverReason
+  customReason        String?
+  validUntil          DateTime?
+  appliedById         String?
+  appliedAt           DateTime     @default(now())
+  revokedAt           DateTime?
+  revokeReason        String?
+  notifyStudent       Boolean      @default(true)
 
   student         StudentProfile @relation(fields: [studentId], references: [id], onDelete: Restrict)
   ledger          StudentFeeLedger? @relation(fields: [ledgerId], references: [id], onDelete: SetNull)
@@ -862,6 +864,7 @@ model Applicant {
   decision          String?       // accept | reject | waitlist
   decisionReason    String?
   decisionAt        DateTime?
+  decisionMakerId   String?
   offerExpiresAt    DateTime?
   convertedToUserId String?
   intakeYear        Int
@@ -872,7 +875,7 @@ model Applicant {
 
   programme         Programme     @relation(fields: [programmeId], references: [id], onDelete: Restrict)
   interviewer       User?         @relation("Interviewer", fields: [interviewerId], references: [id], onDelete: SetNull)
-  decisionMaker     User?         @relation("DecisionMaker", fields: [id], references: [id], onDelete: SetNull)
+  decisionMaker     User?         @relation("DecisionMaker", fields: [decisionMakerId], references: [id], onDelete: SetNull)
   documents         ApplicantDocument[]
   references        ApplicantReference[]
   referrals         Referral[]    @relation("ReferredApplicant")

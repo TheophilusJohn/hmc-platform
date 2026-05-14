@@ -1,31 +1,32 @@
 import { useQuery } from '@tanstack/react-query';
 import api from '../utils/api';
 
+// useFeatures consumes /api/settings/public, which is unauthenticated and returns
+// presence booleans only (no secrets). Previously this hit /api/settings (admin
+// only) and mis-unwrapped the {settings:{...}} shape, so flags were permanently
+// false for everyone — silently hiding Razorpay/email/SMS UI.
 export function useFeatures() {
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
+  const { data } = useQuery({
+    queryKey: ['settings-public'],
     queryFn: async () => {
-      const res = await api.get('/settings');
-      return res.data;
+      const res = await api.get('/settings/public');
+      return res.data || {};
     },
-    staleTime: 5 * 60 * 1000, // 5 min cache
+    staleTime: 5 * 60 * 1000,
     retry: false,
   });
 
-  const get = (key) => settings?.[key] || {};
-
-  const razorpay = get('razorpay');
-  const communication = get('communication_phone');
-  const wise = get('wise');
+  const features = data?.features || {};
 
   return {
-    hasRazorpay: !!(razorpay?.key_id && razorpay?.key_secret),
-    hasEmail: !!(get('sendgrid')?.api_key),
-    hasSMS: !!(communication?.msg91_key || communication?.twilio_account_sid),
-    hasWhatsApp: !!(communication?.whatsapp_business_id),
-    hasWise: !!(wise?.api_key),
-    hasPhone: !!(communication?.phone_number),
-    rawSettings: settings,
-    get,
+    hasRazorpay: !!features.hasRazorpay,
+    hasEmail: !!features.hasEmail,
+    hasSMS: !!features.hasSMS,
+    hasWhatsApp: !!features.hasWhatsApp,
+    hasWise: !!features.hasWise,
+    hasPhone: !!features.hasPhone,
+    collegeName: data?.collegeName,
+    shortName: data?.shortName,
+    razorpayKeyId: data?.razorpay_key_id || null,
   };
 }

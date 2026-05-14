@@ -167,40 +167,63 @@ router.put('/:id/reject', authenticate, requireRole('FACULTY', 'TEACHER_ADMIN', 
 
 router.put('/:id/confirm', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    const rev = await prisma.revaluation.update({
-      where: { id: req.params.id },
-      data: { status: 'confirmed', confirmedBy: req.user.id, confirmedAt: new Date() },
-      include: { student: { include: { user: true } } },
-    });
-
-    if (rev.newMarks !== null && rev.newMarks !== undefined) {
-      const enrollment = await prisma.studentSubjectEnrollment.findFirst({
-        where: { studentId: rev.studentId, subjectId: rev.subjectId, semesterId: rev.semesterId },
+    const rev = await prisma.$transaction(async (tx) => {
+      const rev = await tx.revaluation.update({
+        where: { id: req.params.id },
+        data: { status: 'confirmed', confirmedBy: req.user.id, confirmedAt: new Date() },
+        include: { student: { include: { user: true } } },
       });
-      if (enrollment) {
-        const subject = await prisma.subject.findUnique({ where: { id: rev.subjectId } });
-        const pct = (rev.newMarks / (subject?.totalMarks || 100)) * 100;
-        const { percentToGrade } = require('../utils/cgpa');
-        const grade = percentToGrade(pct);
 
-        await prisma.studentSubjectEnrollment.update({
-          where: { id: enrollment.id },
-          data: {
-            totalMarks: rev.newMarks,
-            grade,
-            resultStatus: grade === 'F' ? 'FAIL' : 'PASS',
-          },
+      if (rev.newMarks !== null && rev.newMarks !== undefined) {
+        const subject = await tx.subject.findUnique({ where: { id: rev.subjectId } });
+        if (!subject) {
+          throw Object.assign(new Error('Revaluation references a missing subject; refusing to update enrollment.'), { status: 400 });
+        }
+        if (!subject.totalMarks || subject.totalMarks <= 0) {
+          throw Object.assign(new Error('Subject has no positive totalMarks; cannot grade revaluation.'), { status: 400 });
+        }
+
+        const enrollment = await tx.studentSubjectEnrollment.findFirst({
+          where: { studentId: rev.studentId, subjectId: rev.subjectId, semesterId: rev.semesterId },
         });
+        if (enrollment) {
+          const pct = (rev.newMarks / subject.totalMarks) * 100;
+          const { percentToGrade } = require('../utils/cgpa');
+          const grade = percentToGrade(pct);
+
+          // Revaluation revalues the ESE component; IA stays put. Marksheet
+          // builder reads iaMarks + eseMarks, so we MUST update eseMarks for
+          // the new total to show up downstream.
+          const ia = enrollment.iaMarks ?? 0;
+          const newEse = Math.max(0, rev.newMarks - ia);
+
+          await tx.studentSubjectEnrollment.update({
+            where: { id: enrollment.id },
+            data: {
+              eseMarks: newEse,
+              totalMarks: rev.newMarks,
+              grade,
+              resultStatus: grade === 'F' ? 'FAIL' : 'PASS',
+            },
+          });
+        }
       }
-    }
+
+      return rev;
+    });
 
     const subject = await prisma.subject.findUnique({ where: { id: rev.subjectId }, select: { name: true } });
     if (rev.student?.user) {
-      await notif.createNotification(rev.student.user.id, 'revaluation_result', 'Revaluation Complete',
-        `Your revaluation for ${subject?.name || 'a subject'} has been processed.`, '/student/marksheet');
+      try {
+        await notif.createNotification(rev.student.user.id, 'revaluation_result', 'Revaluation Complete',
+          `Your revaluation for ${subject?.name || 'a subject'} has been processed.`, '/student/marksheet');
+      } catch (_e) {}
     }
     res.json(rev);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 module.exports = router;

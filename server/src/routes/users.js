@@ -5,7 +5,7 @@ const prisma = require('../config/db');
 const bcrypt = require('bcrypt');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, requireRole, anyRole } = require('../middleware/rbac');
-const { generateUserId } = require('../utils/userId');
+const { createUserWithGeneratedId } = require('../utils/userId');
 
 // GET /api/users
 router.get('/', authenticate, adminOnly, async (req, res, next) => {
@@ -49,48 +49,54 @@ router.post('/', authenticate, adminOnly, async (req, res, next) => {
 
     // Allowlist profile fields rather than spreading req.body into Prisma.
     const STUDENT_FIELDS = ['dob', 'gender', 'nationality', 'studentType', 'studyMode', 'batchId', 'programmeId', 'permanentAddress', 'presentAddress'];
-    const FACULTY_FIELDS = ['designation', 'qualification', 'specialization'];
+    // Note: schema field is `qualifications` (plural); no `specialization` column.
+    const FACULTY_FIELDS = ['designation', 'qualifications'];
     const studentData = {};
     const facultyData = {};
     for (const k of STUDENT_FIELDS) if (req.body[k] !== undefined) studentData[k] = req.body[k];
     for (const k of FACULTY_FIELDS) if (req.body[k] !== undefined) facultyData[k] = req.body[k];
 
-    const userIdDisplay = await generateUserId(role);
     const tempPassword = require('crypto').randomBytes(8).toString('base64url').slice(0, 8) + 'A1!';
     const tempHash = await bcrypt.hash(tempPassword, 12);
 
-    const user = await prisma.user.create({
-      data: {
-        userIdDisplay,
-        role,
-        email,
+    // Use the retry-aware creator so concurrent admin POSTs don't collide on userIdDisplay.
+    const user = await prisma.$transaction(async (tx) => {
+      const base = await createUserWithGeneratedId(role, {
+        email: String(email).trim().toLowerCase(),
         phone,
         status: 'ACTIVE',
-        auth: {
-          create: {
-            passwordHash: await bcrypt.hash('placeholder', 12),
-            tempPasswordHash: tempHash,
-            tempPasswordExpires: new Date(Date.now() + 48 * 60 * 60 * 1000),
-          }
+      }, tx);
+      await tx.userAuth.create({
+        data: {
+          userId: base.id,
+          passwordHash: await bcrypt.hash('placeholder', 12),
+          tempPasswordHash: tempHash,
+          tempPasswordExpires: new Date(Date.now() + 48 * 60 * 60 * 1000),
         },
-        ...(role === 'STUDENT' && {
-          studentProfile: {
-            create: {
-              firstName,
-              lastName,
-              ...studentData,
-              dob: new Date(studentData.dob || '2000-01-01'),
-              gender: studentData.gender || 'Not specified',
-              nationality: studentData.nationality || 'Indian',
-              studyMode: String(studentData.studyMode || 'OFFLINE').toUpperCase(),
-              studentType: String(studentData.studentType || 'DOMESTIC').toUpperCase(),
-            },
+      });
+      if (role === 'STUDENT') {
+        await tx.studentProfile.create({
+          data: {
+            userId: base.id,
+            firstName,
+            lastName,
+            ...studentData,
+            dob: new Date(studentData.dob || '2000-01-01'),
+            gender: studentData.gender || 'Not specified',
+            nationality: studentData.nationality || 'Indian',
+            studyMode: String(studentData.studyMode || 'OFFLINE').toUpperCase(),
+            studentType: String(studentData.studentType || 'DOMESTIC').toUpperCase(),
           },
-        }),
-        ...((['FACULTY', 'TEACHER_ADMIN'].includes(role)) && {
-          facultyProfile: { create: { firstName, lastName, ...facultyData } },
-        }),
+        });
       }
+      // Only roles that actually teach get a FacultyProfile. FULL_ADMIN /
+      // ADMISSIONS_OFFICER don't need one — they aren't referenced from Subject.facultyId.
+      if (['FACULTY', 'TEACHER_ADMIN'].includes(role)) {
+        await tx.facultyProfile.create({
+          data: { userId: base.id, firstName, lastName, ...facultyData },
+        });
+      }
+      return base;
     });
 
     // Send welcome email
@@ -155,7 +161,7 @@ router.put('/:id', authenticate, async (req, res, next) => {
       ? ['email', 'phone', 'status']
       : ['email', 'phone'];
     const studentFields = ['firstName', 'lastName', 'dob', 'gender', 'nationality', 'permanentAddress', 'presentAddress', 'batchId', 'programmeId', 'studentType', 'studyMode'];
-    const facultyFields = ['firstName', 'lastName', 'designation', 'qualification'];
+    const facultyFields = ['firstName', 'lastName', 'designation', 'qualifications'];
 
     // Build User update payload
     const userData = {};

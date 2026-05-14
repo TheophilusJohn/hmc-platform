@@ -69,16 +69,34 @@ router.get('/my-summary', authenticate, async (req, res, next) => {
       totalWaived += waived;
     }
 
+    // InstallmentPlan model only has {id, studentId, semesterId, schedule (JSON), status}.
+    // The actual installment rows live in `schedule: [{dueDate, amount, status, paidAt}, ...]`.
+    // Flatten the schedule per plan so the FE can iterate a flat list.
     let installments = [], feeLocked = false;
     try {
-      const inst = await prisma.installmentPlan.findMany({ where: { studentId: sp.id }, orderBy: { dueDate: 'asc' } });
-      installments = inst.map(i => ({
-        id: i.id, name: i.name || 'Installment',
-        dueDate: i.dueDate, amount: Number(i.amount || 0),
-        status: String(i.status || '').toLowerCase(),
-        overdue: i.dueDate && new Date(i.dueDate) < new Date() && String(i.status).toUpperCase() !== 'PAID',
-      }));
-      feeLocked = !!inst.find(i => String(i.status).toUpperCase() === 'OVERDUE');
+      const plans = await prisma.installmentPlan.findMany({
+        where: { studentId: sp.id },
+        orderBy: { createdAt: 'asc' },
+      });
+      const now = new Date();
+      for (const plan of plans) {
+        const sched = Array.isArray(plan.schedule) ? plan.schedule : [];
+        sched.forEach((slot, index) => {
+          const due = slot.dueDate ? new Date(slot.dueDate) : null;
+          const status = String(slot.status || 'pending').toLowerCase();
+          installments.push({
+            id: `${plan.id}:${index}`,
+            planId: plan.id,
+            index,
+            name: slot.name || `Installment ${index + 1}`,
+            dueDate: due,
+            amount: Number(slot.amount || 0),
+            status,
+            overdue: !!(due && due < now && status !== 'paid'),
+          });
+        });
+      }
+      feeLocked = plans.some(p => String(p.status).toUpperCase() === 'OVERDUE');
     } catch (_e) {}
 
     res.json({
