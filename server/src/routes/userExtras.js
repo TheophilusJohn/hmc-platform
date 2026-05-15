@@ -5,16 +5,32 @@ const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, requireRole } = require('../middleware/rbac');
 
-// Staff who legitimately need to pick users from a list (admin pages, admissions
-// officer assigning interviewers, TA assigning faculty). STUDENT/FACULTY are
-// explicitly NOT allowed to browse the directory.
-const directoryReaders = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER');
+// Staff who legitimately need to pick users from a list. FACULTY is included
+// so faculty can populate the staff recipient picker in their Messages compose
+// page (replying to admins / DMing other staff), but the handler below scopes
+// the response: faculty callers can NEVER receive STUDENT rows, regardless of
+// what's in the `role` query string. Browsing the student directory remains
+// admin/TA/admissions-only.
+const directoryReaders = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER', 'FACULTY');
+
+// Roles a FACULTY caller may see in this endpoint's response. STUDENT is
+// intentionally absent.
+const FACULTY_VISIBLE_ROLES = ['FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER', 'FACULTY'];
 
 router.get('/', authenticate, directoryReaders, async (req, res, next) => {
   const { role } = req.query;
   if (!role) return next();
   try {
-    const roles = role.split(',').map(r => r.trim()).filter(Boolean);
+    let roles = role.split(',').map(r => r.trim()).filter(Boolean);
+    // Faculty scope: intersect the requested roles with the staff allowlist.
+    // STUDENT is silently dropped even if explicitly requested. If a faculty
+    // caller asks for nothing but STUDENT, the intersection is empty and the
+    // endpoint returns an empty list — never a 403 (so the FE doesn't show a
+    // misleading error), just no results.
+    if (req.user.role === 'FACULTY') {
+      roles = roles.filter(r => FACULTY_VISIBLE_ROLES.includes(r));
+      if (roles.length === 0) return res.json({ users: [], total: 0 });
+    }
     const { search, status, page = 1, limit = 100 } = req.query;
     const where = { role: { in: roles } };
     if (status) where.status = status.toUpperCase();
