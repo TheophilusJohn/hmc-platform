@@ -4,13 +4,17 @@ const router = express.Router();
 const prisma = require('../config/db');
 const bcrypt = require('bcrypt');
 const { authenticate } = require('../middleware/auth');
-const { adminOnly, requireRole, anyRole } = require('../middleware/rbac');
+const { adminOnly } = require('../middleware/rbac');
 const { createUserWithGeneratedId } = require('../utils/userId');
 
 // GET /api/users
 router.get('/', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const { role, status, search, programme, batch, page = 1, limit = 20 } = req.query;
+    const { role, status, search, programme, batch, page: rawPage = 1, limit: rawLimit = 20 } = req.query;
+    // Clamp pagination — pre-fix `page` wasn't parsed (string math on
+    // `(page-1)*limit`) and `limit` had no upper bound.
+    const page = Math.max(1, parseInt(rawPage, 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(rawLimit, 10) || 20));
     const where = {};
     if (role) where.role = role;
     if (status) where.status = status;
@@ -26,7 +30,7 @@ router.get('/', authenticate, adminOnly, async (req, res, next) => {
         facultyProfile: true,
       },
       skip: (page - 1) * limit,
-      take: parseInt(limit),
+      take: limit,
       orderBy: { createdAt: 'desc' },
     });
 

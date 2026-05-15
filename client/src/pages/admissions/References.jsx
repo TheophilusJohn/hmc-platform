@@ -15,9 +15,11 @@ export default function References() {
     { key: 'applicantName', label: 'Applicant', render: v => <strong style={{ fontSize: 13 }}>{v}</strong> },
     { key: 'refereeName', label: 'Referee', render: (v, r) => <div><div style={{ fontWeight: 500 }}>{v}</div><div style={{ fontSize: 12, color: '#7B8494' }}>{r.refereeEmail}</div></div> },
     { key: 'refType', label: 'Type', render: v => <Badge color={v === 'pastoral' ? 'green' : 'teal'}>{v.replace(/_/g, ' ')}</Badge> },
-    { key: 'status', label: 'Status', render: v => <Badge color={v === 'received' ? 'green' : v === 'expired' ? 'red' : 'amber'}>{v}</Badge> },
+    // /references/pending only returns PENDING + EXPIRED, so the 'received'
+    // branch was unreachable — dropped to make the truth-table honest.
+    { key: 'status', label: 'Status', render: v => <Badge color={v === 'expired' ? 'red' : 'amber'}>{v}</Badge> },
     { key: 'tokenExpiresAt', label: 'Expires', render: v => v ? new Date(v).toLocaleDateString('en-IN') : '—' },
-    { key: 'id', label: '', render: (id, r) => r.status !== 'received' && <Btn size="sm" variant="outline" onClick={() => handleResend(id)}>Resend Link</Btn> },
+    { key: 'id', label: '', render: id => <Btn size="sm" variant="outline" onClick={() => handleResend(id)}>Resend Link</Btn> },
   ];
 
   return (

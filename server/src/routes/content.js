@@ -59,21 +59,9 @@ router.delete('/units/:id', authenticate, facultyOrAbove, async (req, res, next)
   } catch (err) { next(err); }
 });
 
-router.post('/units/:id/content', authenticate, facultyOrAbove, async (req, res, next) => {
-  try {
-    const count = await prisma.unitContent.count({ where: { unitId: req.params.id } });
-    const content = await prisma.unitContent.create({
-      data: {
-        unitId: req.params.id,
-        type: req.body.type,
-        contentUrl: req.body.contentUrl,
-        contentText: req.body.contentText,
-        orderIndex: req.body.orderIndex ?? count + 1,
-      },
-    });
-    res.status(201).json(content);
-  } catch (err) { next(err); }
-});
+// Legacy POST /api/content/units/:id/content removed — no client callers and
+// it was a half-built duplicate of POST /api/content/subjects/:id/content below
+// (which handles file upload, title/description, visibility, etc.).
 
 router.put('/content/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {

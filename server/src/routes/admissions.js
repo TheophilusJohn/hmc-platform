@@ -64,7 +64,10 @@ function flatten(a) {
 // GET /api/admissions
 router.get('/', authenticate, admissionsAccess, async (req, res, next) => {
   try {
-    const { stage, programmeId, intakeYear, search, today, page = 1, limit = 100 } = req.query;
+    const { stage, programmeId, intakeYear, search, today, page: rawPage = 1, limit: rawLimit = 100 } = req.query;
+    // Clamp pagination — pre-fix `?limit=1000000` issued an unbounded findMany.
+    const page = Math.max(1, parseInt(rawPage, 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(rawLimit, 10) || 100));
     const where = {};
     if (stage) {
       if (Array.isArray(stage)) {
@@ -92,8 +95,8 @@ router.get('/', authenticate, admissionsAccess, async (req, res, next) => {
         where,
         include: { programme: { select: { name: true, code: true } } },
         orderBy: { createdAt: 'desc' },
-        skip: (parseInt(page) - 1) * parseInt(limit),
-        take: parseInt(limit),
+        skip: (page - 1) * limit,
+        take: limit,
       }),
       prisma.applicant.count({ where }),
     ]);
@@ -101,8 +104,8 @@ router.get('/', authenticate, admissionsAccess, async (req, res, next) => {
     res.json({
       applicants: applicants.map(flatten),
       total,
-      page: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit)),
+      page,
+      pages: Math.ceil(total / limit),
     });
   } catch (err) { next(err); }
 });

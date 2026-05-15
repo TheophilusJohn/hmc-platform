@@ -48,10 +48,12 @@ router.get('/profile', authenticate, async (req, res, next) => {
         let credits = 0, weighted = 0;
         for (const e of allEnr) {
           const t = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-          credits += e.subject.creditHours || 0;
-          const pct = e.subject.totalMarks > 0 ? (t / e.subject.totalMarks) * 100 : 0;
-          const gp = pct >= 90 ? 10 : pct >= 80 ? 9 : pct >= 70 ? 8 : pct >= 60 ? 7 : pct >= 50 ? 6 : pct >= 45 ? 5 : 0;
-          if (t >= e.subject.passMark) weighted += gp * (e.subject.creditHours || 0);
+          const cr = e.subject.creditHours || 0;
+          credits += cr;
+          // gpaFromMarks (defined below) returns 0 on a failing total — same
+          // behaviour as the pre-fix inline ladder but a single source of truth
+          // for grade-point mapping shared with /me/stats.
+          weighted += gpaFromMarks(t, e.subject.passMark, e.subject.totalMarks) * cr;
         }
         profileResponse.cgpa = credits > 0 ? (weighted / credits).toFixed(2) : null;
         profileResponse.creditsEarned = credits;

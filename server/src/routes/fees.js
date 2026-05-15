@@ -6,32 +6,10 @@ const { authenticate } = require('../middleware/auth');
 const { adminOnly, adminOrTA, requireRole } = require('../middleware/rbac');
 const { Prisma } = require('@prisma/client');
 
-// GET /api/fee-types
-router.get('/fee-types', authenticate, async (req, res, next) => {
-  try {
-    const feeTypes = await prisma.feeType.findMany({
-      where: { isActive: true },
-      orderBy: { name: 'asc' },
-    });
-    res.json({ feeTypes });
-  } catch (err) { next(err); }
-});
-
-// POST /api/fee-types
-router.post('/fee-types', authenticate, adminOnly, async (req, res, next) => {
-  try {
-    const feeType = await prisma.feeType.create({ data: req.body });
-    res.status(201).json({ feeType });
-  } catch (err) { next(err); }
-});
-
-// PUT /api/fee-types/:id
-router.put('/fee-types/:id', authenticate, adminOnly, async (req, res, next) => {
-  try {
-    const feeType = await prisma.feeType.update({ where: { id: req.params.id }, data: req.body });
-    res.json({ feeType });
-  } catch (err) { next(err); }
-});
+// Note: fee-type CRUD lives in routes/feeTypes.js (mounted at /api/fee-types).
+// Earlier copies of the same handlers existed here under /api/fees/fee-types but
+// had no callers and diverged on the isActive filter — removed to keep one
+// source of truth.
 
 // DELETE /api/fee-types/:id (deactivate)
 router.delete('/fee-types/:id', authenticate, adminOnly, async (req, res, next) => {

@@ -20,6 +20,12 @@ const errorHandler = (err, req, res, next) => {
   if (err.code === 'P2003') {
     return res.status(400).json({ error: 'Invalid reference: related record not found.' });
   }
+  if (err.code === 'P2014') {
+    return res.status(400).json({ error: 'Operation would violate a required relation between records.' });
+  }
+  if (err.code === 'P2000') {
+    return res.status(400).json({ error: 'A field value is too long for its column.' });
+  }
   if (err.name === 'ValidationError') {
     return res.status(400).json({ error: err.message });
   }

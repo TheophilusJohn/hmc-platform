@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { PageWrapper, Card, Btn, Select, Badge, Table } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
-import { BarChart } from '../../components/charts';
 import api from '../../utils/api';
 
 const REPORT_TYPES = [
@@ -90,7 +89,6 @@ export default function Reports() {
                 ))}
               </div>
             )}
-            {reportData?.chartData && <BarChart data={reportData.chartData} xKey="label" bars={[{ key: 'value', label: activeReport.label }]} />}
             {reportData?.rows && reportData.rows.length > 0 ? (
               <Table columns={(reportData.columns || []).map(c => ({ key: c, label: c.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) }))} rows={reportData.rows} />
             ) : (

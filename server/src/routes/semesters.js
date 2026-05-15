@@ -25,21 +25,41 @@ router.get('/', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Parse a date input strictly: only accept ISO 8601 forms so "2025" alone
+// doesn't silently become Jan 1, and `null` propagates explicitly when missing.
+function parseStrictDate(input, field) {
+  if (input === undefined || input === null || input === '') return null;
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(input))) {
+    throw Object.assign(new Error(`${field} must be an ISO date (YYYY-MM-DD)`), { status: 400 });
+  }
+  const d = new Date(input);
+  if (Number.isNaN(d.getTime())) {
+    throw Object.assign(new Error(`${field} is not a valid date`), { status: 400 });
+  }
+  return d;
+}
+
 router.post('/', authenticate, adminOnly, async (req, res, next) => {
   try {
     const { name, type, academicYear, startDate, endDate, marksDeadline, batchId } = req.body;
+    const start = parseStrictDate(startDate, 'startDate');
+    const end = parseStrictDate(endDate, 'endDate');
+    if (!start || !end) return res.status(400).json({ error: 'startDate and endDate are required' });
     const semester = await prisma.semester.create({
       data: {
         name, type, academicYear,
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        marksDeadline: marksDeadline ? new Date(marksDeadline) : null,
+        startDate: start,
+        endDate: end,
+        marksDeadline: parseStrictDate(marksDeadline, 'marksDeadline'),
         batchId,
         status: 'DRAFT',
       },
     });
     res.status(201).json(semester);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
@@ -49,14 +69,17 @@ router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
       where: { id: req.params.id },
       data: {
         name,
-        startDate: startDate ? new Date(startDate) : undefined,
-        endDate: endDate ? new Date(endDate) : undefined,
-        marksDeadline: marksDeadline ? new Date(marksDeadline) : undefined,
+        startDate: startDate ? parseStrictDate(startDate, 'startDate') : undefined,
+        endDate: endDate ? parseStrictDate(endDate, 'endDate') : undefined,
+        marksDeadline: marksDeadline ? parseStrictDate(marksDeadline, 'marksDeadline') : undefined,
         status,
       },
     });
     res.json(semester);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 router.post('/:id/activate', authenticate, adminOrTA, async (req, res, next) => {

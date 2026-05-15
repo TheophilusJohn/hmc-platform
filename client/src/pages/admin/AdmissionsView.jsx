@@ -17,7 +17,8 @@ export function AdmissionsView() {
         <StatCard icon="❌" label="Rejected" value={stats.rejected || 0} color="#991B1B" />
       </div>
       <Card title="Pipeline by Stage">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8,1fr)', gap: 8 }}>
+        {/* Auto-fit collapses to one column on phones; was a fixed 8-col grid. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: 8 }}>
           {STAGES.map(s => (
             <div key={s} style={{ padding: '12px 8px', background: '#EEF4FA', borderRadius: 8, textAlign: 'center' }}>
               <div style={{ fontSize: 22, fontWeight: 700, color: '#0F2B4A' }}>{stats.byStage?.[s.toLowerCase().replace(/ /g,'_')] || 0}</div>

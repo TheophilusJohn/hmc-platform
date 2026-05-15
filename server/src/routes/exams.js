@@ -385,7 +385,8 @@ router.get('/:id', authenticate, async (req, res, next) => {
       duration: exam.durationMins, totalMarks: exam.totalMarks,
       type: exam.type, answerFormat: exam.answerFormat, mode: exam.mode,
       questionCount: exam._count.questions,
-      instructions: exam.settings ? null : null,
+      // No `instructions` column in the Exam or ExamSettings schema — drop the
+      // permanently-null field rather than ship dead UI surface.
       showResultAfter: !!exam.settings?.showAnswersAfter,
     });
   } catch (err) { next(err); }

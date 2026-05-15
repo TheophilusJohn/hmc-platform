@@ -95,10 +95,8 @@ export function useAuth() {
     window.location.href = '/login';
   }, []);
 
-  const changePassword = useCallback(async (currentPassword, newPassword) => {
-    const res = await api.post('/auth/change-password', { currentPassword, newPassword });
-    return res.data;
-  }, []);
+  // ChangePassword.jsx posts to /auth/change-password directly; this hook
+  // helper had no callers, so it was removed to keep the surface honest.
 
-  return { user, loading, error, login, logout, changePassword, isAuthenticated: !!user };
+  return { user, loading, error, login, logout, isAuthenticated: !!user };
 }

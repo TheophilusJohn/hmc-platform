@@ -10,6 +10,8 @@ export default function AdminDashboard() {
   const { data: pipeline } = useApi('pipeline-stats', '/admissions/stats');
   const { data: financeSummary } = useApi('finance-summary', '/reports/financial/summary');
   const { data: atRisk } = useApi('at-risk', '/reports/at-risk');
+  // Active student count — pre-fix this card was hard-coded to "—".
+  const { data: studentsList } = useApi('active-students', '/users?role=STUDENT&status=ACTIVE&limit=1');
 
   const completion = completionData?.percent || 0;
   // Server returns `byStage: { received: N, docs_review: N, ... }` (an object),
@@ -36,7 +38,7 @@ export default function AdminDashboard() {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-        <StatCard icon="🎓" label="Active Students" value="—" color="#0F2B4A" />
+        <StatCard icon="🎓" label="Active Students" value={studentsList?.total ?? '—'} color="#0F2B4A" />
         <StatCard icon="📋" label="In Pipeline" value={pipeline?.total ?? '—'} color="#C9920A" />
         <StatCard icon="₹" label="INR Collected" value={financeSummary ? formatCurrency(financeSummary.collectedINR) : '—'} color="#166534" />
         <StatCard icon="💲" label="USD Collected" value={financeSummary ? `$${Number(financeSummary.collectedUSD || 0).toLocaleString()}` : '—'} color="#0F766E" />

@@ -50,8 +50,8 @@ export default function QuestionBank() {
       const lc = String(v || '').toLowerCase();
       return <Badge color={DIFF_COLORS[lc] || 'gray'}>{lc}</Badge>;
     }},
-    { key: 'marks', label: 'Marks', render: v => v ?? 1 },
-    { key: 'usedCount', label: 'Used', render: v => v || 0 },
+    // No `marks` or `usedCount` columns on QuestionBankItem — both rendered
+    // constant fallbacks. Bank questions get marks=5 at draw-into-exam time.
     { key: 'id', label: '', render: id => <Btn size="sm" variant="danger" onClick={() => handleDelete(id)}>Delete</Btn> },
   ];
 

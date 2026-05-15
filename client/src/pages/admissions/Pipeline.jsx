@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import { PageWrapper, Badge, Btn, Modal } from '../../components/common';
+import { Badge } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
-import api from '../../utils/api';
 import ApplicantProfile from './ApplicantProfile';
 
 // Includes REJECTED so rejected applicants don't silently disappear from the
