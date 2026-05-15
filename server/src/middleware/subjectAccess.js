@@ -16,10 +16,13 @@ async function canAccessSubject(user, subjectId) {
   // request to a subject-scoped endpoint. authenticate has already confirmed
   // user.status === 'ACTIVE' so we only need to verify the subject + profile link.
   if (user.role === 'FACULTY') {
+    // Allow active OR archived subjects — pre-fix, an archived past-semester
+    // subject 403'd the originally-assigned faculty, blocking legitimate
+    // revaluation/grade-correction workflows. Draft subjects still 403.
     const subj = await prisma.subject.findFirst({
       where: {
         id: subjectId,
-        status: 'active',
+        status: { in: ['active', 'archived'] },
         faculty: { userId: user.id },
       },
       select: { id: true },
@@ -27,11 +30,15 @@ async function canAccessSubject(user, subjectId) {
     return !!subj;
   }
   if (user.role === 'STUDENT') {
+    // Refuse access if the semester is DRAFT or ARCHIVED — pre-fix an enrollment
+    // for a future/draft semester granted access immediately, letting students
+    // peek at unreleased content.
     const enr = await prisma.studentSubjectEnrollment.findFirst({
       where: {
         subjectId,
         student: { userId: user.id },
         subject: { status: 'active' },
+        semester: { status: { in: ['ACTIVE', 'EXAM', 'ARCHIVED'] } },
       },
       select: { id: true },
     });

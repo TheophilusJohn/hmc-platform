@@ -8,6 +8,7 @@ const { createUserWithGeneratedId } = require('../utils/userId');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 const { Prisma } = require('@prisma/client');
+const { istBusinessDate, nowInIST, istEndOfDayPlusDays } = require('../utils/dateUtils');
 
 // Allowed forward transitions in the 7-stage admissions pipeline.
 // Skipping (e.g. RECEIVED → ACCEPTED) is forbidden; admins use /reactivate
@@ -75,8 +76,10 @@ router.get('/', authenticate, admissionsAccess, async (req, res, next) => {
     if (programmeId) where.programmeId = programmeId;
     if (intakeYear) where.intakeYear = parseInt(intakeYear);
     if (today === 'true') {
-      const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-      const todayEnd = new Date(todayStart); todayEnd.setDate(todayEnd.getDate() + 1);
+      // Anchor "today" to the IST calendar — the server may run UTC.
+      const ist = nowInIST();
+      const todayStart = istBusinessDate(ist.year, ist.monthIndex, ist.day);
+      const todayEnd = istBusinessDate(ist.year, ist.monthIndex, ist.day + 1);
       where.OR = [
         { interviewedAt: { gte: todayStart, lt: todayEnd } },
         { pipelineStage: { in: ['RECEIVED', 'DOCS_REVIEW'] } },
@@ -148,12 +151,14 @@ router.post('/', authenticate, admissionsAccess, async (req, res, next) => {
     }
 
     const year = new Date().getFullYear();
-    // applicationNo is computed from count; retry on collision to handle concurrent submissions.
+    // Count once outside the retry loop; on collision the loop increments the
+    // local counter rather than re-counting (which under concurrent load could
+    // re-read the same stale count for every retry and exhaust attempts).
+    const baseCount = await prisma.applicant.count({ where: { intakeYear: year } });
     let applicant;
     let lastErr;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const count = await prisma.applicant.count({ where: { intakeYear: year } });
-      const appNo = `HMC-APP-${year}-${String(count + 1001 + attempt).padStart(4, '0')}`;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const appNo = `HMC-APP-${year}-${String(baseCount + 1001 + attempt).padStart(4, '0')}`;
       try {
         applicant = await prisma.applicant.create({
           data: {
@@ -184,7 +189,13 @@ router.post('/', authenticate, admissionsAccess, async (req, res, next) => {
 router.get('/stats', authenticate, admissionsAccess, async (req, res, next) => {
   try {
     const { intakeYear = new Date().getFullYear() } = req.query;
-    const year = parseInt(intakeYear);
+    const parsedYear = parseInt(intakeYear, 10);
+    // Fall back to current year on NaN so we don't silently return zero rows
+    // and confuse the dashboard. Range-clamp to a sane window too.
+    const currentYear = new Date().getFullYear();
+    const year = (Number.isInteger(parsedYear) && parsedYear >= 2000 && parsedYear <= currentYear + 5)
+      ? parsedYear
+      : currentYear;
     const stages = ['RECEIVED', 'DOCS_REVIEW', 'INTERVIEW_SCHEDULED', 'INTERVIEW_DONE', 'WAITLISTED', 'ACCEPTED', 'REJECTED', 'ENROLLED'];
     const pairs = await Promise.all(
       stages.map(s => prisma.applicant.count({ where: { pipelineStage: s, intakeYear: year } }).then(c => [s, c]))
@@ -192,9 +203,14 @@ router.get('/stats', authenticate, admissionsAccess, async (req, res, next) => {
     const byStage = {};
     for (const [s, c] of pairs) byStage[s.toLowerCase()] = c;
     const total = pairs.reduce((acc, [, c]) => acc + c, 0);
-    const inPipeline = byStage.received + byStage.docs_review + byStage.interview_scheduled + byStage.interview_done + byStage.waitlisted;
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    const todayEnd = new Date(todayStart); todayEnd.setDate(todayEnd.getDate() + 1);
+    // Coerce each byStage member to 0 before summing — protects against NaN
+    // when an enum value is missing (e.g. future schema additions).
+    const inPipelineKeys = ['received', 'docs_review', 'interview_scheduled', 'interview_done', 'waitlisted'];
+    const inPipeline = inPipelineKeys.reduce((acc, k) => acc + (byStage[k] || 0), 0);
+    // IST-anchored day window — the server may run UTC.
+    const istToday = nowInIST();
+    const todayStart = istBusinessDate(istToday.year, istToday.monthIndex, istToday.day);
+    const todayEnd = istBusinessDate(istToday.year, istToday.monthIndex, istToday.day + 1);
     const interviewsToday = await prisma.applicant.count({
       where: { interviewedAt: { gte: todayStart, lt: todayEnd } },
     });
@@ -273,7 +289,7 @@ router.post('/:id/interview', authenticate, admissionsAccess, async (req, res, n
   try {
     const { interviewScore, interviewNotes, recommendation } = req.body;
     const existing = await prisma.applicant.findUnique({
-      where: { id: req.params.id }, select: { pipelineStage: true },
+      where: { id: req.params.id }, select: { pipelineStage: true, interviewerId: true },
     });
     if (!existing) return res.status(404).json({ error: 'Applicant not found' });
     // Recording an interview only makes sense from INTERVIEW_SCHEDULED. Pre-fix
@@ -282,6 +298,13 @@ router.post('/:id/interview', authenticate, admissionsAccess, async (req, res, n
     if (existing.pipelineStage !== 'INTERVIEW_SCHEDULED' && existing.pipelineStage !== 'INTERVIEW_DONE') {
       return res.status(400).json({ error: `Cannot record interview from stage ${existing.pipelineStage}. Move to INTERVIEW_SCHEDULED first.` });
     }
+    // Preserve the original interviewer if another AO already recorded the
+    // interview — a second AO can still update notes/score but can't silently
+    // claim the interview as their own. Admins can override by clearing the
+    // applicant via /reactivate.
+    if (existing.interviewerId && existing.interviewerId !== req.user.id && req.user.role !== 'FULL_ADMIN') {
+      return res.status(403).json({ error: 'Interview was recorded by another officer. Ask them to update it, or have an admin reset the applicant.' });
+    }
     // Map recommendation to pipeline stage
     let pipelineStage = 'INTERVIEW_DONE';
     const rec = String(recommendation || '').toLowerCase();
@@ -289,8 +312,17 @@ router.post('/:id/interview', authenticate, admissionsAccess, async (req, res, n
     else if (rec === 'waitlist') pipelineStage = 'WAITLISTED';
     // 'accept' stays at INTERVIEW_DONE so admin can confirm via /accept
 
+    // Clamp interview score to 0–10 (UI presents it as "score / 10").
+    let parsedScore = null;
+    if (interviewScore !== undefined && interviewScore !== null && interviewScore !== '') {
+      const s = parseInt(interviewScore, 10);
+      if (!Number.isInteger(s) || s < 0 || s > 10) {
+        return res.status(400).json({ error: 'interviewScore must be an integer 0–10' });
+      }
+      parsedScore = s;
+    }
     const data = {
-      interviewScore: interviewScore ? parseInt(interviewScore) : null,
+      interviewScore: parsedScore,
       interviewNotes: interviewNotes || null,
       interviewerId: req.user.id,
       interviewedAt: new Date(),
@@ -338,7 +370,8 @@ router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next
 
     const tempPassword = require('crypto').randomBytes(8).toString('base64url').slice(0, 10) + 'A1!';
     const tempHash = await bcrypt.hash(tempPassword, 12);
-    const offerExpires = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
+    // End-of-day IST so the offer is valid through the full last day, not 5h30m short of it.
+    const offerExpires = istEndOfDayPlusDays(new Date(), deadlineDays);
 
     // Wrap the entire accept flow in a single transaction so:
     //  - the convertedToUserId check + write is atomic (prevents double-accept race)
@@ -392,7 +425,13 @@ router.post('/:id/accept', authenticate, admissionsAccess, async (req, res, next
           userId: baseUser.id,
           firstName: fd.firstName || '',
           lastName: fd.lastName || '',
-          dob: fd.dob ? new Date(fd.dob) : new Date('2000-01-01'),
+          // Coerce-then-validate so a malformed dob doesn't throw inside the
+          // transaction and roll the entire accept back.
+          dob: (() => {
+            if (!fd.dob) return new Date('2000-01-01');
+            const d = new Date(fd.dob);
+            return isNaN(d.getTime()) ? new Date('2000-01-01') : d;
+          })(),
           gender: fd.gender || 'unspecified',
           nationality: fd.nationality || 'Indian',
           studentType: applicant.studentType,

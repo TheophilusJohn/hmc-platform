@@ -4,6 +4,7 @@ const router = express.Router();
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOrTA } = require('../middleware/rbac');
+const { istEndOfDay } = require('../utils/dateUtils');
 
 async function computeBelowAttendance() {
   const students = await prisma.studentProfile.findMany({
@@ -43,7 +44,9 @@ router.get('/stats', authenticate, adminOrTA, async (req, res, next) => {
       prisma.subject.count({ where: { status: 'active' } }),
       prisma.academicException.count({ where: { status: 'PENDING' } }),
       prisma.semester.findMany({
-        where: { marksDeadline: { lt: new Date() }, status: 'ACTIVE' },
+        // marksDeadline columns are stored as IST end-of-day; comparing with
+        // server-UTC `new Date()` would flip them overdue 5h30m early.
+        where: { marksDeadline: { lt: istEndOfDay() }, status: 'ACTIVE' },
         select: { subjects: { select: { enrollments: { where: { resultStatus: 'PENDING' }, select: { id: true } } } } },
       }),
     ]);

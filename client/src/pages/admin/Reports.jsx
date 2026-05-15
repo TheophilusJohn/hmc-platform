@@ -27,9 +27,16 @@ export default function Reports() {
   const [filters, setFilters] = useState({ semesterId: '', batchId: '', programmeId: '' });
   const { data: semesters } = useApi('/semesters');
   const { data: programmes } = useApi('/programmes');
+  // Batch list is keyed off the selected programme. The backend supports
+  // filtering by batchId on every report endpoint but the picker was missing.
+  const batches = (programmes?.programmes || []).flatMap(p =>
+    (p.batches || []).filter(b => !filters.programmeId || p.id === filters.programmeId)
+      .map(b => ({ value: b.id, label: `${p.code || p.name} – ${b.name || b.startYear}` }))
+  );
 
-  const reportUrl = activeReport ? `/reports/${activeReport.id.replace('_','/')}` : null;
-  const { data: reportData, loading } = useApi(activeReport ? `${reportUrl}?semesterId=${filters.semesterId}&batchId=${filters.batchId}&programmeId=${filters.programmeId}` : null, [activeReport, filters]);
+  const reportUrl = activeReport ? `/reports/${activeReport.id.replace(/_/g, '/')}` : null;
+  // React Query exposes `isLoading`, not `loading` — pre-fix the spinner never rendered.
+  const { data: reportData, isLoading } = useApi(activeReport ? `${reportUrl}?semesterId=${filters.semesterId}&batchId=${filters.batchId}&programmeId=${filters.programmeId}` : null, [activeReport, filters]);
 
   if (!activeReport) {
     return (
@@ -56,14 +63,22 @@ export default function Reports() {
         <Btn variant="ghost" onClick={() => setActiveReport(null)}>← Back</Btn>
         <Select value={filters.semesterId} onChange={e => setFilters(f => ({ ...f, semesterId: e.target.value }))}
           options={[{ value: '', label: 'All Semesters' }, ...(semesters?.semesters || []).map(s => ({ value: s.id, label: s.name }))]} />
-        <Select value={filters.programmeId} onChange={e => setFilters(f => ({ ...f, programmeId: e.target.value }))}
+        <Select value={filters.programmeId} onChange={e => setFilters(f => ({ ...f, programmeId: e.target.value, batchId: '' }))}
           options={[{ value: '', label: 'All Programmes' }, ...(programmes?.programmes || []).map(p => ({ value: p.id, label: p.name }))]} />
+        <Select value={filters.batchId} onChange={e => setFilters(f => ({ ...f, batchId: e.target.value }))}
+          options={[{ value: '', label: 'All Batches' }, ...batches]} />
         <div style={{ flex: 1 }} />
-        <Btn variant="outline" onClick={() => downloadPDF(`${reportUrl}`, `HMC-${activeReport.label}-Report.pdf`)}>Download PDF</Btn>
+        <Btn variant="outline" onClick={() => {
+          // Append active filters to the PDF download URL — pre-fix only the
+          // Excel button included filters, so the PDF was always unfiltered.
+          const qs = new URLSearchParams({ ...filters, format: 'pdf' }).toString();
+          const url = qs ? `${reportUrl}?${qs}` : reportUrl;
+          downloadPDF(url, `HMC-${activeReport.label}-Report.pdf`);
+        }}>Download PDF</Btn>
         <Btn variant="outline" onClick={() => api.get(reportUrl, { params: { ...filters, format: 'excel' }, responseType: 'blob' }).then(r => { const l = document.createElement('a'); l.href = URL.createObjectURL(r.data); l.download = `report.xlsx`; l.click(); })}>Download Excel</Btn>
       </div>
       <Card>
-        {loading ? <div style={{ color: '#7B8494', padding: 40, textAlign: 'center' }}>Loading report data...</div> : (
+        {isLoading ? <div style={{ color: '#7B8494', padding: 40, textAlign: 'center' }}>Loading report data...</div> : (
           <div>
             {reportData?.summary && (
               <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -76,8 +91,10 @@ export default function Reports() {
               </div>
             )}
             {reportData?.chartData && <BarChart data={reportData.chartData} xKey="label" bars={[{ key: 'value', label: activeReport.label }]} />}
-            {reportData?.rows && (
+            {reportData?.rows && reportData.rows.length > 0 ? (
               <Table columns={(reportData.columns || []).map(c => ({ key: c, label: c.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) }))} rows={reportData.rows} />
+            ) : (
+              reportData && <div style={{ color: '#7B8494', padding: 40, textAlign: 'center' }}>No data for the selected filters.</div>
             )}
           </div>
         )}

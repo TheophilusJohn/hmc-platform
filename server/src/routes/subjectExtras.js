@@ -75,7 +75,11 @@ router.post('/:id/questions', authenticate, facultyOrAbove, async (req, res, nex
         questionText: question,
         options: options || null,
         correctAnswer: typeof answer === 'string' ? answer : JSON.stringify(answer),
-        difficulty: (difficulty || 'MEDIUM').toUpperCase(),
+        // Schema declares difficulty as lowercase string (default 'medium',
+        // valid values easy|medium|hard). Pre-fix the server up-cased the value
+        // to 'MEDIUM' etc., which works at insert time but breaks any future
+        // case-sensitive filter on lowercase.
+        difficulty: String(difficulty || 'medium').toLowerCase(),
         explanation: explanation || null,
       },
     });

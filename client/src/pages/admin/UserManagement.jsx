@@ -20,8 +20,15 @@ export default function UserManagement() {
   const [showPw, setShowPw] = useState(false);
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', role: 'STUDENT', programmeId: '', studyMode: 'OFFLINE', studentType: 'DOMESTIC' });
 
+  // "All" tab omits the role param entirely so the request falls through
+  // to users.js (the canonical list endpoint) instead of relying on
+  // userExtras.js silently short-circuiting on empty role. The other tabs
+  // include a non-empty role list and go through userExtras.
   const roleFilter = tab === 'all' ? '' : tab === 'students' ? 'STUDENT' : tab === 'faculty' ? 'FACULTY' : 'FULL_ADMIN,TEACHER_ADMIN,ADMISSIONS_OFFICER';
-  const { data, isLoading, refetch } = useApi(`/users?search=${search}&role=${roleFilter}`, [search, tab]);
+  const query = roleFilter
+    ? `/users?search=${encodeURIComponent(search)}&role=${roleFilter}`
+    : `/users?search=${encodeURIComponent(search)}`;
+  const { data, isLoading, refetch } = useApi(query, [search, tab]);
   const { data: progData } = useApi('/programmes');
 
   const users = data?.users || [];

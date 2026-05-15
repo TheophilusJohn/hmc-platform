@@ -113,10 +113,20 @@ router.post('/:id/copy-setup', authenticate, adminOrTA, async (req, res, next) =
 
 router.delete('/:id', authenticate, adminOnly, async (req, res, next) => {
   try {
-    const sem = await prisma.semester.findUnique({ where: { id: req.params.id } });
+    const sem = await prisma.semester.findUnique({
+      where: { id: req.params.id },
+      include: { _count: { select: { subjects: true, enrollments: true, ledgerEntries: true, installmentPlans: true } } },
+    });
     if (!sem) return res.status(404).json({ error: 'Semester not found' });
     if (sem.status === 'ACTIVE' || sem.status === 'EXAM') {
       return res.status(400).json({ error: 'Cannot delete an active/exam semester. Archive it first.' });
+    }
+    // Pre-empt the FK error rather than relying on Prisma to bounce it.
+    const c = sem._count || {};
+    if ((c.subjects || 0) + (c.enrollments || 0) + (c.ledgerEntries || 0) + (c.installmentPlans || 0) > 0) {
+      return res.status(400).json({
+        error: `Cannot delete: semester still has ${c.subjects || 0} subject(s), ${c.enrollments || 0} enrollment(s), ${c.ledgerEntries || 0} ledger entry(ies), ${c.installmentPlans || 0} installment plan(s).`,
+      });
     }
     await prisma.semester.delete({ where: { id: req.params.id } });
     res.json({ success: true });

@@ -105,7 +105,12 @@ router.post('/:id/start', authenticate, requireRole('STUDENT'), async (req, res,
     let questions = exam.questions;
     if (exam.settings?.shuffleQuestions) questions = [...questions].sort(() => Math.random() - 0.5);
     if (exam.settings?.shuffleOptions) {
-      questions = questions.map(q => ({ ...q, options: q.options ? [...q.options].sort(() => Math.random() - 0.5) : q.options }));
+      questions = questions.map(q => ({
+        ...q,
+        options: Array.isArray(q.options)
+          ? [...q.options].sort(() => Math.random() - 0.5)
+          : q.options,
+      }));
     }
 
     const safeQuestions = questions.map(q => ({ ...q, correctAnswer: undefined, modelAnswer: undefined }));

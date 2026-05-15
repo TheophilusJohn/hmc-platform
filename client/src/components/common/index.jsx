@@ -278,6 +278,10 @@ export function PageWrapper({ sidebar, children, topbar, title, subtitle }) {
 export function SearchInput({ value, onChange, placeholder = 'Search…', style = {} }) {
   const [local, setLocal] = React.useState(value || '');
   const timerRef = React.useRef(null);
+  // Re-sync local state if the parent resets `value` programmatically.
+  React.useEffect(() => {
+    setLocal(value || '');
+  }, [value]);
   const handleChange = (e) => {
     setLocal(e.target.value);
     clearTimeout(timerRef.current);
@@ -295,11 +299,15 @@ export function SearchInput({ value, onChange, placeholder = 'Search…', style 
 
 // Pagination.jsx
 export function Pagination({ page, total, pageSize = 20, onChange }) {
-  const pages = Math.ceil(total / pageSize);
+  // Coerce inputs — undefined/NaN from a still-loading caller would yield NaN
+  // pages and render nonsense.
+  const totalNum = Number.isFinite(total) ? total : 0;
+  const sizeNum = Number.isFinite(pageSize) && pageSize > 0 ? pageSize : 20;
+  const pages = totalNum > 0 ? Math.ceil(totalNum / sizeNum) : 0;
   if (pages <= 1) return null;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end', padding: '12px 0', fontFamily: 'DM Sans,sans-serif', fontSize: 13 }}>
-      <span style={{ color: '#7B8494', marginRight: 8 }}>Showing {((page - 1) * pageSize) + 1}–{Math.min(page * pageSize, total)} of {total}</span>
+      <span style={{ color: '#7B8494', marginRight: 8 }}>Showing {((page - 1) * sizeNum) + 1}–{Math.min(page * sizeNum, totalNum)} of {totalNum}</span>
       <button onClick={() => onChange(page - 1)} disabled={page <= 1} style={{ padding: '4px 10px', border: '1px solid #DDE1E7', borderRadius: 6, cursor: page <= 1 ? 'not-allowed' : 'pointer', background: '#fff', color: page <= 1 ? '#A0A8B4' : '#0F2B4A' }}>←</button>
       {Array.from({ length: Math.min(5, pages) }, (_, i) => {
         const p = Math.max(1, Math.min(page - 2, pages - 4)) + i;

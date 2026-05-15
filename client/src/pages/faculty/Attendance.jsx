@@ -59,7 +59,7 @@ export default function Attendance() {
         <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 4 }}>
             {['class', 'chapel'].map(m => (
-              <button key={m} onClick={() => { setMode(m); setRecords({}); setSavedAt(null); }}
+              <button key={m} onClick={() => { setMode(m); setRecords({}); setSavedAt(null); if (m === 'chapel') setSelectedSubject(''); }}
                 style={{ padding: '7px 16px', borderRadius: 8, border: `1px solid ${mode === m ? '#0F2B4A' : '#DDE1E7'}`, background: mode === m ? '#0F2B4A' : '#fff', color: mode === m ? '#fff' : '#3D4450', fontWeight: 600, fontSize: 13, cursor: 'pointer', textTransform: 'capitalize' }}>
                 {m}
               </button>

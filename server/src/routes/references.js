@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { authenticate } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const emailService = require('../services/email.service');
+const { istEndOfDayPlusDays } = require('../utils/dateUtils');
 
 const admissionsAccess = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_OFFICER');
 
@@ -47,7 +48,8 @@ router.post('/send', authenticate, admissionsAccess, async (req, res, next) => {
     if (!applicantExists) return res.status(404).json({ error: 'Applicant not found' });
 
     const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    // End-of-day IST so the link is usable through the whole 14th day.
+    const expires = istEndOfDayPlusDays(new Date(), 14);
 
     const existing = await prisma.applicantReference.findFirst({
       where: { applicantId, refType },
@@ -123,7 +125,8 @@ router.post('/:id/resend', authenticate, admissionsAccess, async (req, res, next
     if (!ref) return res.status(404).json({ error: 'Reference not found' });
 
     const newToken = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    // End-of-day IST so the link is usable through the whole 14th day.
+    const expires = istEndOfDayPlusDays(new Date(), 14);
 
     const updated = await prisma.applicantReference.update({
       where: { id: req.params.id },

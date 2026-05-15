@@ -44,8 +44,13 @@ async function buildMarksheet(studentId, semesterId) {
     const pct = maxTotal > 0 && hasMarks ? (total / maxTotal) * 100 : null;
     const isPublished = e.resultStatus === 'PASS' || e.resultStatus === 'FAIL';
     let g = { grade: null, point: null };
-    if (isPublished && hasMarks && pct !== null) {
-      g = total < e.subject.passMark ? { grade: 'F', point: 0 } : gradeFromPercent(pct);
+    if (isPublished && hasMarks) {
+      if (total < e.subject.passMark) {
+        // Misconfigured subjects (totalMarks=0) should still F when below passMark.
+        g = { grade: 'F', point: 0 };
+      } else if (pct !== null) {
+        g = gradeFromPercent(pct);
+      }
     }
     return {
       subjectId: e.subjectId,
@@ -130,7 +135,10 @@ router.get('/latest', authenticate, async (req, res, next) => {
       orderBy: { semester: { startDate: 'desc' } },
       include: { semester: true },
     });
-    if (!latest) return res.json({ subjects: [], cgpaSummary: {} });
+    if (!latest) return res.json({
+      subjects: [],
+      cgpaSummary: { cgpa: null, semesterGpa: null, creditsCompleted: 0, standing: null },
+    });
     const data = await buildMarksheet(sp.id, latest.semesterId);
     res.json(data);
   } catch (err) { next(err); }

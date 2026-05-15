@@ -31,16 +31,19 @@ export default function Subjects() {
   // Subject.facultyId references FacultyProfile.id, NOT User.id. The /users
   // endpoint returns a flat shape with `facultyProfileId`; only users that
   // actually have a faculty profile are eligible.
-  const facultyOptions = (faculty?.users || [])
-    .filter(u => u.facultyProfileId)
-    .map(u => {
-      const fn = u.firstName || '';
-      const ln = u.lastName || '';
-      return {
-        value: u.facultyProfileId,
-        label: [fn, ln].filter(Boolean).join(' ') || u.email || u.userIdDisplay,
-      };
-    });
+  const facultyOptions = [
+    { value: '', label: '— Unassigned —' },
+    ...(faculty?.users || [])
+      .filter(u => u.facultyProfileId)
+      .map(u => {
+        const fn = u.firstName || '';
+        const ln = u.lastName || '';
+        return {
+          value: u.facultyProfileId,
+          label: [fn, ln].filter(Boolean).join(' ') || u.email || u.userIdDisplay,
+        };
+      }),
+  ];
 
   const setField = (k, target = setForm) => (v) => target(f => ({ ...f, [k]: getVal(v) }));
 
@@ -56,11 +59,22 @@ export default function Subjects() {
     totalMarks: (parseInt(f.eseMarks, 10) || 0) + (parseInt(f.iaMarks, 10) || 0),
   });
 
+  const validateMarks = (f) => {
+    const ese = parseInt(f.eseMarks, 10) || 0;
+    const ia = parseInt(f.iaMarks, 10) || 0;
+    const pass = parseInt(f.passMark, 10) || 0;
+    if (ese < 0 || ia < 0 || pass < 0) return 'Marks cannot be negative.';
+    if (pass > (ese + ia)) return `Pass mark (${pass}) cannot exceed total marks (${ese + ia} = ESE + IA).`;
+    return null;
+  };
+
   const handleCreate = async () => {
     if (!form.name || !form.code || !form.semesterId || !form.batchId) {
       alert('Please fill: Subject Name, Code, Semester, and Batch.');
       return;
     }
+    const marksErr = validateMarks(form);
+    if (marksErr) { alert(marksErr); return; }
     try {
       await api.post('/subjects', toNumeric(form));
       setOpen(false); setForm(EMPTY); refetch();
@@ -88,6 +102,8 @@ export default function Subjects() {
   };
 
   const handleSaveEdit = async () => {
+    const marksErr = validateMarks(editForm);
+    if (marksErr) { alert(marksErr); return; }
     try {
       const { id, ...payload } = editForm;
       await api.put(`/subjects/${id}`, toNumeric(payload));

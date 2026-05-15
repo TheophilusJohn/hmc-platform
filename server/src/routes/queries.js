@@ -22,9 +22,21 @@ router.get('/', authenticate, adminOnly, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const QUERY_CATEGORIES = new Set(['FEES', 'ACADEMIC', 'PROFILE', 'OTHER']);
+const QUERY_SUBJECT_MAX = 200;
+const QUERY_BODY_MAX = 5 * 1024;
+
 router.post('/', authenticate, requireRole('STUDENT'), async (req, res, next) => {
   try {
-    const { category, subject, body } = req.body;
+    const { subject, body } = req.body;
+    const category = String(req.body.category || '').toUpperCase();
+    if (!QUERY_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `category must be one of: ${[...QUERY_CATEGORIES].join(', ')}` });
+    }
+    if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'subject is required' });
+    if (!body || !String(body).trim()) return res.status(400).json({ error: 'body is required' });
+    if (String(subject).length > QUERY_SUBJECT_MAX) return res.status(400).json({ error: `subject exceeds ${QUERY_SUBJECT_MAX} character limit` });
+    if (String(body).length > QUERY_BODY_MAX) return res.status(400).json({ error: `body exceeds ${QUERY_BODY_MAX} character limit` });
 
     const slaSetting = await prisma.systemSetting.findUnique({ where: { key: 'query_sla_hours' } });
     const slaHours = slaSetting?.value?.hours || 48;

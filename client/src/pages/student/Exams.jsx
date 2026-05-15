@@ -22,7 +22,12 @@ export default function StudentExams() {
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{e.title}</div>
                 <div style={{ fontSize: 12, color: '#7B8494', marginTop: 2 }}>{e.subjectName} · {e.duration} minutes · {e.totalMarks} marks</div>
                 <div style={{ fontSize: 12, color: '#5A6272', marginTop: 2 }}>
-                  {new Date(e.startTime).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })} at {new Date(e.startTime).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  {(() => {
+                    if (!e.startTime) return 'Schedule TBA';
+                    const d = new Date(e.startTime);
+                    if (Number.isNaN(d.getTime())) return 'Schedule TBA';
+                    return `${d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })} at ${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+                  })()}
                 </div>
               </div>
               <Badge color={STATUS_COLORS[e.myStatus] || 'gray'}>{e.myStatus}</Badge>

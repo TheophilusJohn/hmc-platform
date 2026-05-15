@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 export function AdmissionsView() {
   const { data } = useApi('/admissions/stats');
   const stats = data || {};
-  const STAGES = ['Received','Docs Review','Interview Scheduled','Interview Done','Waitlisted','Accepted','Enrolled'];
+  const STAGES = ['Received','Docs Review','Interview Scheduled','Interview Done','Waitlisted','Accepted','Enrolled','Rejected'];
 
   return (
     <PageWrapper title="Admissions Overview" subtitle="Read-only view of the admissions pipeline">
@@ -17,7 +17,7 @@ export function AdmissionsView() {
         <StatCard icon="❌" label="Rejected" value={stats.rejected || 0} color="#991B1B" />
       </div>
       <Card title="Pipeline by Stage">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8,1fr)', gap: 8 }}>
           {STAGES.map(s => (
             <div key={s} style={{ padding: '12px 8px', background: '#EEF4FA', borderRadius: 8, textAlign: 'center' }}>
               <div style={{ fontSize: 22, fontWeight: 700, color: '#0F2B4A' }}>{stats.byStage?.[s.toLowerCase().replace(/ /g,'_')] || 0}</div>

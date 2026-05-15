@@ -60,6 +60,21 @@ router.post('/', authenticate, facultyOrAbove, async (req, res, next) => {
     if (totalMarks !== null && passMark !== null && passMark > totalMarks) {
       return res.status(400).json({ error: 'passMark cannot exceed totalMarks' });
     }
+    // maxAttempts must be at least 1 — pre-fix examSession.js silently clamped
+    // 0 to 1 via `exam.maxAttempts || 1`, papering over a config bug.
+    if (examData.maxAttempts !== undefined) {
+      const ma = parseInt(examData.maxAttempts, 10);
+      if (!Number.isInteger(ma) || ma < 1) {
+        return res.status(400).json({ error: 'maxAttempts must be a positive integer' });
+      }
+    }
+    // durationMins must be positive
+    if (examData.durationMins !== undefined) {
+      const dm = parseInt(examData.durationMins, 10);
+      if (!Number.isInteger(dm) || dm < 1) {
+        return res.status(400).json({ error: 'durationMins must be a positive integer' });
+      }
+    }
 
     // startDatetime < endDatetime
     if (examData.startDatetime && examData.endDatetime) {
@@ -67,6 +82,14 @@ router.post('/', authenticate, facultyOrAbove, async (req, res, next) => {
       const end = new Date(examData.endDatetime);
       if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end <= start) {
         return res.status(400).json({ error: 'endDatetime must be after startDatetime' });
+      }
+    }
+    // Reject exams scheduled to start in the past — a typo here lets a student
+    // hit /start immediately and consume an attempt.
+    if (examData.startDatetime) {
+      const start = new Date(examData.startDatetime);
+      if (!isNaN(start.getTime()) && start.getTime() < Date.now() - 60 * 1000) {
+        return res.status(400).json({ error: 'startDatetime cannot be in the past' });
       }
     }
 
@@ -141,6 +164,21 @@ router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
         safeUpdate[k] = String(examData[k]).toUpperCase();
       } else safeUpdate[k] = examData[k];
     }
+    // Re-validate range invariants on PUT — pre-fix the PUT route bypassed every
+    // check, so a faculty could set passMark > totalMarks, end < start, or
+    // negative maxAttempts/durationMins via edit even though create rejected them.
+    if (safeUpdate.totalMarks != null && safeUpdate.passMark != null && safeUpdate.passMark > safeUpdate.totalMarks) {
+      return res.status(400).json({ error: 'passMark cannot exceed totalMarks' });
+    }
+    if (safeUpdate.startDatetime && safeUpdate.endDatetime && safeUpdate.endDatetime <= safeUpdate.startDatetime) {
+      return res.status(400).json({ error: 'endDatetime must be after startDatetime' });
+    }
+    if (safeUpdate.maxAttempts != null && (!Number.isInteger(safeUpdate.maxAttempts) || safeUpdate.maxAttempts < 1)) {
+      return res.status(400).json({ error: 'maxAttempts must be a positive integer' });
+    }
+    if (safeUpdate.durationMins != null && (!Number.isInteger(safeUpdate.durationMins) || safeUpdate.durationMins < 1)) {
+      return res.status(400).json({ error: 'durationMins must be a positive integer' });
+    }
     const exam = await prisma.exam.update({
       where: { id: req.params.id },
       data: {
@@ -154,10 +192,18 @@ router.put('/:id', authenticate, facultyOrAbove, async (req, res, next) => {
 
 router.post('/:id/publish', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    const existing = await prisma.exam.findUnique({ where: { id: req.params.id }, select: { subjectId: true } });
+    const existing = await prisma.exam.findUnique({
+      where: { id: req.params.id },
+      select: { subjectId: true, _count: { select: { questions: true } } },
+    });
     if (!existing) return res.status(404).json({ error: 'Exam not found' });
     if (!(await canAccessSubject(req.user, existing.subjectId))) {
       return res.status(403).json({ error: 'You do not teach this subject' });
+    }
+    // Refuse to publish an exam with zero questions — students would see a
+    // blank paper. Faculty must add at least one question first.
+    if ((existing._count?.questions || 0) === 0) {
+      return res.status(400).json({ error: 'Cannot publish an exam with no questions. Add questions before publishing.' });
     }
     const exam = await prisma.exam.update({
       where: { id: req.params.id },
@@ -253,12 +299,21 @@ router.get('/:id/statistics', authenticate, facultyOrAbove, async (req, res, nex
       select: { marksObtained: true },
     });
 
-    const marks = submissions.map(s => s.marksObtained || 0);
-    const avg = marks.length ? marks.reduce((a, b) => a + b, 0) / marks.length : 0;
-    const max = marks.length ? Math.max(...marks) : 0;
-    const min = marks.length ? Math.min(...marks) : 0;
+    // Exclude submissions that lack a recorded mark — pre-fix the average
+    // treated null/undefined as 0 and biased the mean downward.
+    const marks = submissions
+      .map(s => s.marksObtained)
+      .filter(m => m !== null && m !== undefined && Number.isFinite(m));
+    const avg = marks.length ? marks.reduce((a, b) => a + b, 0) / marks.length : null;
+    const max = marks.length ? Math.max(...marks) : null;
+    const min = marks.length ? Math.min(...marks) : null;
 
-    res.json({ count: marks.length, average: avg.toFixed(2), highest: max, lowest: min });
+    res.json({
+      count: marks.length,
+      average: avg !== null ? avg.toFixed(2) : null,
+      highest: max,
+      lowest: min,
+    });
   } catch (err) { next(err); }
 });
 

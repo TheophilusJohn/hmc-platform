@@ -21,6 +21,16 @@ export default function FeeSettings() {
   const { data, refetch } = useApi('/fee-types');
 
   const handleCreate = async () => {
+    if (!form.name?.trim()) { alert('Fee type name is required.'); return; }
+    // At least one of domestic/international amount must be provided.
+    const dom = String(form.domesticAmount).trim();
+    const intl = String(form.internationalAmount).trim();
+    if (!dom && !intl) {
+      alert('Please enter at least one of: Domestic Amount or International Amount.');
+      return;
+    }
+    if (dom && (Number(dom) < 0 || isNaN(Number(dom)))) { alert('Domestic amount must be a non-negative number.'); return; }
+    if (intl && (Number(intl) < 0 || isNaN(Number(intl)))) { alert('International amount must be a non-negative number.'); return; }
     try {
       await api.post('/fee-types', form);
       setOpen(false);

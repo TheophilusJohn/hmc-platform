@@ -75,8 +75,10 @@ router.get('/financial', authenticate, adminOnly, async (req, res, next) => {
     const rows = entries.map(e => {
       const amt = Number(e.amount || 0);
       const waived = Number(e.waivedAmount || 0);
-      const balance = Math.max(0, Number(e.balance || 0));
-      const paid = Math.max(0, amt - waived - balance);
+      // Don't clamp balance to 0 — a negative balance means the student
+      // overpaid, which should be visible in reports rather than masked.
+      const balance = Number(e.balance || 0);
+      const paid = amt - waived - balance;
       return {
         student_id: e.student?.user?.userIdDisplay || '',
         student_name: e.student ? `${e.student.firstName} ${e.student.lastName}` : '',
@@ -142,7 +144,9 @@ router.get('/attendance', authenticate, facultyOrAbove, async (req, res, next) =
     if (batchId) where.batchId = batchId;
     if (programmeId) where.programmeId = programmeId;
     const students = await prisma.studentProfile.findMany({
-      where,
+      // Inactive students should not skew the attendance report — match the
+      // convention used by the financial/outstanding and at-risk handlers.
+      where: { ...where, user: { status: 'ACTIVE' } },
       select: {
         id: true, firstName: true, lastName: true,
         user: { select: { userIdDisplay: true } },
@@ -155,7 +159,9 @@ router.get('/attendance', authenticate, facultyOrAbove, async (req, res, next) =
     let totalSess = 0, totalPres = 0, below = 0;
     const rows = students.map(s => {
       const t = s.attendance.length;
-      const p = s.attendance.filter(a => a.status === 'PRESENT').length;
+      // Treat LATE as present — matches the SQL in reports.js (the
+      // /attendance/below-threshold report) and attendance.js summary helpers.
+      const p = s.attendance.filter(a => a.status === 'PRESENT' || a.status === 'LATE').length;
       const r = t > 0 ? Math.round((p / t) * 100) : 0;
       totalSess += t; totalPres += p;
       if (r < 75 && t > 0) below++;

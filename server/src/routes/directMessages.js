@@ -70,11 +70,16 @@ router.get('/:id', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const DM_SUBJECT_MAX = 200;
+const DM_BODY_MAX = 10 * 1024;
+
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const { recipientId, subject, body } = req.body;
     if (!recipientId || !subject || !body) return res.status(400).json({ error: 'recipientId, subject, body required' });
     if (recipientId === req.user.id) return res.status(400).json({ error: 'Cannot message yourself' });
+    if (String(subject).length > DM_SUBJECT_MAX) return res.status(400).json({ error: `Subject exceeds ${DM_SUBJECT_MAX} character limit` });
+    if (String(body).length > DM_BODY_MAX) return res.status(400).json({ error: `Body exceeds ${DM_BODY_MAX} character limit` });
     const rec = await prisma.user.findUnique({ where: { id: recipientId }, select: { id: true } });
     if (!rec) return res.status(400).json({ error: 'Recipient not found' });
     const message = await prisma.directMessage.create({

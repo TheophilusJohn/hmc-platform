@@ -86,7 +86,13 @@ export default function NewApplicant() {
       return !!(form.spouseName);
     }
     // References — require both name+email for both refs (PASTORAL + CHRISTIAN_LEADER)
-    if (step === 6) return !!(form.ref1?.name && form.ref1?.email && form.ref2?.name && form.ref2?.email);
+    // References step — both refs must have name + valid email. Pre-fix the
+    // type="email" attribute alone didn't block submission with empty or
+    // malformed addresses.
+    if (step === 6) {
+      const emailOk = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
+      return !!(form.ref1?.name && emailOk(form.ref1.email) && form.ref2?.name && emailOk(form.ref2.email));
+    }
     // Statement of Faith
     if (step === 7) return !!(form.statementOfFaith && form.statementOfFaith.trim().length >= 50);
     // Health Declaration — must affirm

@@ -57,8 +57,13 @@ router.post('/', authenticate, adminOrTA, async (req, res, next) => {
     const settings = await prisma.systemSetting.findMany({ where: { key: { in: ['sendgrid', 'communication_phone'] } } });
     const settingsMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
 
+    // Require an explicit recipientScope.type — pre-fix, omitting recipientScope
+    // defaulted to "all" and blasted every active student in one accidental POST.
+    if (!recipientScope || !recipientScope.type) {
+      return res.status(400).json({ error: 'recipientScope.type is required (all | offline | online | programme | batch | individual)' });
+    }
     let recipients = [];
-    const scopeType = String(recipientScope?.type || 'all').toLowerCase();
+    const scopeType = String(recipientScope.type).toLowerCase();
     if (scopeType === 'all') {
       recipients = await prisma.user.findMany({
         where: { role: 'STUDENT', status: 'ACTIVE' },
@@ -87,8 +92,12 @@ router.post('/', authenticate, adminOrTA, async (req, res, next) => {
     }
 
     // Tolerate channels being either array or object
-    const channelArr = Array.isArray(channels) ? channels :
+    const rawChannels = Array.isArray(channels) ? channels :
       (channels && typeof channels === 'object' ? Object.entries(channels).filter(([_, v]) => v).map(([k]) => k) : []);
+    // Allowlist: drop anything that isn't a known channel keyword (was
+    // previously silently passed through into the JSON column).
+    const VALID_CHANNELS = new Set(['email', 'sms', 'whatsapp', 'in_app']);
+    const channelArr = rawChannels.map(c => String(c).toLowerCase()).filter(c => VALID_CHANNELS.has(c));
 
     // Refuse to fan out beyond a sane per-request cap — protects the SMTP
     // quota and prevents a compromised TA credential from blasting thousands
@@ -146,7 +155,10 @@ router.post('/', authenticate, adminOrTA, async (req, res, next) => {
           userId: r.id,
           type: 'message',
           title: subject,
-          body: personalise(body.substring(0, 100), { studentName: r.studentProfile?.firstName || '' }),
+          // Defensive: body may have been validated above, but it can still be
+          // an empty string. Coerce to '' before slicing so null/undefined
+          // doesn't throw.
+          body: personalise(String(body || '').substring(0, 100), { studentName: r.studentProfile?.firstName || '' }),
           isRead: false,
         },
       })

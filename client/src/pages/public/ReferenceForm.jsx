@@ -13,7 +13,7 @@ const QUESTIONS = [
 
 export default function ReferenceForm() {
   const { token } = useParams();
-  const [status, setStatus] = useState('loading'); // loading | ready | submitting | done | error
+  const [status, setStatus] = useState('loading'); // loading | ready | submitting | done | already | error
   const [info, setInfo] = useState(null);
   const [answers, setAnswers] = useState({});
 
@@ -21,7 +21,14 @@ export default function ReferenceForm() {
     if (!token) { setStatus('error'); return; }
     api.get(`/references/${token}`)
       .then(({ data }) => { setInfo(data); setStatus('ready'); })
-      .catch(() => setStatus('error'));
+      .catch(err => {
+        // Distinguish "already submitted" from "link expired/invalid" — the
+        // referee otherwise sees a misleading "expired" message after they
+        // returned to the page via a back-button.
+        const msg = (err?.response?.data?.error || '').toLowerCase();
+        if (msg.includes('already') || msg.includes('submitted')) setStatus('already');
+        else setStatus('error');
+      });
   }, [token]);
 
   const handleSubmit = async (e) => {
@@ -33,7 +40,11 @@ export default function ReferenceForm() {
       // (was wrapping in `{answers:{...}}`, which buried the data one level).
       await api.put(`/references/${token}/submit`, { ...answers });
       setStatus('done');
-    } catch { setStatus('error'); }
+    } catch (err) {
+      const msg = (err?.response?.data?.error || '').toLowerCase();
+      if (msg.includes('already') || msg.includes('submitted')) setStatus('already');
+      else setStatus('error');
+    }
   };
 
   const applicantName = [info?.applicant?.firstName, info?.applicant?.lastName].filter(Boolean).join(' ');
@@ -44,6 +55,11 @@ export default function ReferenceForm() {
     <div style={{ fontSize: 40, marginBottom: 16 }}>⚠️</div>
     <h2 style={{ fontFamily: "'Playfair Display',serif", color: '#0F2B4A' }}>Link Expired or Invalid</h2>
     <p style={{ color: '#7B8494' }}>This reference link has expired or is no longer valid. Please contact the applicant or HMC directly.</p>
+  </div></Shell>;
+  if (status === 'already') return <Shell><div style={{ padding: 40, textAlign: 'center' }}>
+    <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+    <h2 style={{ fontFamily: "'Playfair Display',serif", color: '#0F2B4A' }}>Reference Already Submitted</h2>
+    <p style={{ color: '#7B8494' }}>A reference has already been submitted via this link. Thank you.</p>
   </div></Shell>;
   if (status === 'done') return <Shell><div style={{ padding: 40, textAlign: 'center' }}>
     <div style={{ fontSize: 56, marginBottom: 16 }}>✅</div>

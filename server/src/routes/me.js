@@ -73,8 +73,14 @@ router.put('/profile', authenticate, async (req, res, next) => {
         if (permanentAddress !== undefined) data.permanentAddress = permanentAddress;
         if (presentAddress !== undefined) data.presentAddress = presentAddress;
         if (emergencyContact !== undefined || emergencyPhone !== undefined) {
+          // Legacy rows may store emergencyContact as a bare string (the raw
+          // name). Preserve it as `name` instead of clobbering it with an empty
+          // object when the JSON.parse fails.
           let existing = {};
-          if (sp.emergencyContact) { try { existing = JSON.parse(sp.emergencyContact); } catch {} }
+          if (sp.emergencyContact) {
+            try { existing = JSON.parse(sp.emergencyContact); }
+            catch { existing = { name: sp.emergencyContact }; }
+          }
           data.emergencyContact = JSON.stringify({
             ...existing,
             ...(emergencyContact !== undefined && { name: emergencyContact }),

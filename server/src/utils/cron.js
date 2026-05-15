@@ -198,7 +198,7 @@ function initCronJobs() {
                 subject.faculty.user.id,
                 'marks_deadline',
                 'Marks Deadline Approaching',
-                `Marks deadline for ${subject.name} is approaching (${sem.marksDeadline?.toLocaleDateString()}). You have ${pending} ungraded submission(s).`,
+                `Marks deadline for ${subject.name} is approaching (${sem.marksDeadline ? sem.marksDeadline.toLocaleDateString('en-IN', { timeZone: TZ, day: '2-digit', month: 'short', year: 'numeric' }) : 'soon'}). You have ${pending} ungraded submission(s).`,
                 '/faculty/exams'
               );
             }

@@ -88,7 +88,10 @@ export default function TranscriptVerify({ type = 'transcript' }) {
                 programme ? ['Programme', programme] : null,
                 certNumber ? ['Certificate No.', certNumber] : null,
                 purpose ? ['Issued For', purpose] : null,
-                issued ? [isCertificate ? 'Graduation Date' : 'Issued On', new Date(issued).toLocaleDateString('en-IN')] : null,
+                issued ? [isCertificate ? 'Graduation Date' : 'Issued On', (() => {
+                  const d = new Date(issued);
+                  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-IN');
+                })()] : null,
               ].filter(Boolean).map(([l, v]) => (
                 <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #BBF7D0', fontSize: 13 }}>
                   <span style={{ color: '#5A6272' }}>{l}</span>

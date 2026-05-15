@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { PageWrapper, Card, Badge, Btn } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
@@ -7,6 +8,7 @@ const TYPE_ICONS = { fee: '💰', exam: '📝', assignment: '✏️', general: '
 const TYPE_COLORS = { fee: 'amber', exam: 'purple', assignment: 'teal', general: 'navy', marks: 'green', attendance: 'red', hostel: 'navy' };
 
 export default function Notifications() {
+  const navigate = useNavigate();
   // Server paginates at 20/page. Pre-fix the FE never requested page 2, so
   // students could only ever see their 20 most recent notifications.
   const [page, setPage] = useState(1);
@@ -15,10 +17,15 @@ export default function Notifications() {
   const total = data?.total ?? notifications.length;
   const hasMore = page * 20 < total;
 
-  const markRead = async (id) => {
-    await api.put(`/notifications/${id}/read`);
-    refetch();
+  const handleRowClick = async (n) => {
+    if (!n.isRead) {
+      try { await api.put(`/notifications/${n.id}/read`); refetch(); } catch (_e) {}
+    }
+    // Each notification carries a `link` (e.g. /student/fees) — navigate there
+    // so the row is more than a read-marker.
+    if (n.link) navigate(n.link);
   };
+
 
   const markAllRead = async () => {
     await api.put('/notifications/read-all');
@@ -34,8 +41,8 @@ export default function Notifications() {
           </div>
         )}
         {notifications.map(n => (
-          <div key={n.id} onClick={() => !n.isRead && markRead(n.id)}
-            style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #DDE1E7', cursor: !n.isRead ? 'pointer' : 'default', background: !n.isRead ? 'rgba(15,43,74,0.02)' : 'transparent' }}>
+          <div key={n.id} onClick={() => handleRowClick(n)}
+            style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #DDE1E7', cursor: (n.link || !n.isRead) ? 'pointer' : 'default', background: !n.isRead ? 'rgba(15,43,74,0.02)' : 'transparent' }}>
             <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#EEF4FA', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>
               {TYPE_ICONS[n.type] || '📢'}
             </div>

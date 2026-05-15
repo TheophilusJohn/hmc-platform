@@ -80,18 +80,26 @@ export default function QuestionBank() {
               <textarea value={form.question} onChange={e => setForm(f => ({ ...f, question: e.target.value }))}
                 style={{ width: '100%', minHeight: 80, padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', fontFamily: 'DM Sans' }} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               {/* QuestionType enum (schema): MCQ | WRITTEN | FILE_UPLOAD | SCRIPTURE.
                   Pre-fix had 'true_false' and 'short' which the server rejected
-                  with a Prisma enum error. WRITTEN replaces both. */}
-              <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} options={[
+                  with a Prisma enum error. WRITTEN replaces both.
+                  `marks` input was removed — the QuestionBankItem schema has no
+                  marks column, and the server-side from-bank/random-draw injectors
+                  hardcode marks=5 when adding a bank question to an exam. */}
+              <Select label="Type" value={form.type} onChange={e => {
+                // Switching type leaves the previous answer (an MCQ index, or a
+                // True/False letter) stale and the new MCQ radio shows nothing
+                // selected. Reset the answer field on type change.
+                const newType = e.target.value;
+                setForm(f => ({ ...f, type: newType, answer: '' }));
+              }} options={[
                 { value: 'MCQ', label: 'MCQ' },
                 { value: 'WRITTEN', label: 'Written / Short Answer' },
                 { value: 'FILE_UPLOAD', label: 'File Upload' },
                 { value: 'SCRIPTURE', label: 'Scripture Reflection' },
               ]} />
               <Select label="Difficulty" value={form.difficulty} onChange={e => setForm(f => ({ ...f, difficulty: e.target.value }))} options={DIFF} />
-              <Input label="Marks" type="number" value={form.marks} onChange={e => setForm(f => ({ ...f, marks: e.target.value }))} />
             </div>
             {form.type === 'MCQ' && (
               <div>

@@ -31,7 +31,10 @@ export default function StudentLayout() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'DM Sans', sans-serif" }}>
-      <Sidebar items={NAV} active={active} onSelect={id => navigate(NAV.find(n => n.id === id).path)}
+      <Sidebar items={NAV} active={active} onSelect={id => {
+        const target = NAV.find(n => n.id === id);
+        if (target) navigate(target.path);
+      }}
         user={{ name: displayName, role: 'Student', id: user?.userIdDisplay }}
         onLogout={logout} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

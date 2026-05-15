@@ -15,9 +15,14 @@ export default function Semesters() {
   const { data, refetch } = useApi('/semesters');
   const { data: batches } = useApi('/programmes');
   const semesters = data?.semesters || [];
-  const allBatches = (batches?.programmes || []).flatMap(p =>
-    (p.batches || []).map(b => ({ value: b.id, label: `${p.name} – ${b.name}` }))
-  );
+  // Lead with a placeholder so the first programme/batch isn't silently
+  // auto-selected (the Select component picks options[0] when value is empty).
+  const allBatches = [
+    { value: '', label: 'Select a batch…' },
+    ...(batches?.programmes || []).flatMap(p =>
+      (p.batches || []).map(b => ({ value: b.id, label: `${p.name} – ${b.name}` }))
+    ),
+  ];
 
   const setField = (k, target = setForm) => (v) => target(f => ({ ...f, [k]: getVal(v) }));
 
@@ -28,6 +33,11 @@ export default function Semesters() {
     }
     if (new Date(form.endDate) <= new Date(form.startDate)) {
       alert('End date must be after start date.');
+      return;
+    }
+    // academicYear must match YYYY-YY (e.g. 2025-26) — pre-fix any string passed.
+    if (form.academicYear && !/^\d{4}-\d{2}$/.test(String(form.academicYear).trim())) {
+      alert('Academic year must be in YYYY-YY format (e.g. 2025-26).');
       return;
     }
     try {

@@ -107,7 +107,17 @@ async function getSignedUrl(objectPath, expirySeconds = 3600, bucket = DEFAULT_B
  */
 async function getReadUrl(stored, expirySeconds = 3600, bucket = DEFAULT_BUCKET) {
   if (!stored) return null;
-  if (/^https?:\/\//i.test(stored)) return stored;
+  if (/^https?:\/\//i.test(stored)) {
+    // Legacy full URLs: only honor URLs pointing at our own MinIO endpoint.
+    // Arbitrary http(s) targets could redirect users to attacker-controlled
+    // hosts in admin-curated fields (e.g. AcademicException.attachmentUrl).
+    try {
+      const u = new URL(stored);
+      const expectedHost = (process.env.MINIO_ENDPOINT || 'localhost').toLowerCase();
+      if (u.hostname.toLowerCase() === expectedHost) return stored;
+    } catch (_e) {}
+    return null;
+  }
   try {
     return await getSignedUrl(stored, expirySeconds, bucket);
   } catch (_e) {

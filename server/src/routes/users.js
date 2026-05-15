@@ -46,6 +46,15 @@ router.post('/', authenticate, adminOnly, async (req, res, next) => {
     if (!email || !firstName || !lastName) {
       return res.status(400).json({ error: 'firstName, lastName and email are required' });
     }
+    // Soft phone format check — allow common formats (+CC NNNNNNNNNN,
+    // NNNNNNNNNN, hyphen/space separated). Pre-fix any string was accepted.
+    const { phone } = req.body;
+    if (phone !== undefined && phone !== null && phone !== '') {
+      const cleaned = String(phone).replace(/[\s\-()]/g, '');
+      if (!/^\+?\d{6,15}$/.test(cleaned)) {
+        return res.status(400).json({ error: 'phone must be 6-15 digits, optionally prefixed with country code' });
+      }
+    }
 
     // Allowlist profile fields rather than spreading req.body into Prisma.
     const STUDENT_FIELDS = ['dob', 'gender', 'nationality', 'studentType', 'studyMode', 'batchId', 'programmeId', 'permanentAddress', 'presentAddress'];

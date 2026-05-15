@@ -187,10 +187,15 @@ router.post('/batches/:id/progression', authenticate, adminOrTA, async (req, res
 
 router.put('/:id', authenticate, adminOnly, async (req, res, next) => {
   try {
+    // Whitelist only fields that exist on the canonical Programme model:
+    // name, code, durationYears, medium, availableOffline, availableOnline,
+    // status. Pre-fix listed totalSemesters/feeINR/feeUSD/description/isActive
+    // — none of those are columns on Programme, so updates silently failed.
     const data = {};
-    for (const k of ['name', 'code', 'durationYears', 'totalSemesters', 'feeINR', 'feeUSD', 'description', 'isActive']) {
+    for (const k of ['name', 'code', 'durationYears', 'medium', 'availableOffline', 'availableOnline', 'status']) {
       if (req.body[k] !== undefined) data[k] = req.body[k];
     }
+    if (data.durationYears !== undefined) data.durationYears = parseInt(data.durationYears, 10);
     const programme = await prisma.programme.update({ where: { id: req.params.id }, data });
     res.json({ programme });
   } catch (err) { console.error('programme update:', err); next(err); }

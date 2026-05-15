@@ -6,9 +6,16 @@ const { setIo } = require('./services/notification.service');
 const { logger } = require('./utils/logger');
 
 function initSocket(httpServer) {
+  // CORS origin MUST be explicit in production — defaulting to a dev URL
+  // would let a malicious page open a socket if the env var is missing.
+  const origin = process.env.CLIENT_URL ||
+    (process.env.NODE_ENV === 'production' ? null : 'http://localhost:5173');
+  if (!origin) {
+    throw new Error('CLIENT_URL must be configured in production for socket.io CORS');
+  }
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CLIENT_URL || 'http://localhost:5173',
+      origin,
       methods: ['GET', 'POST'],
       credentials: true,
     }

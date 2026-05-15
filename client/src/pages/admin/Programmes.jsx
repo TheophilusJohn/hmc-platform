@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PageWrapper, Card, Btn, Badge, Modal, Input, Select } from '../../components/common';
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
@@ -20,13 +20,26 @@ export default function Programmes() {
 
   const programmes = data?.programmes || [];
   // Refresh selectedProg from latest data so its batches stay in sync after refetch
-  const currentSelected = selectedProg ? programmes.find(p => p.id === selectedProg.id) : null;
+  const currentSelected = selectedProg ? (programmes.find(p => p.id === selectedProg.id) || null) : null;
+  // Drop a stale selection if the programme was deleted (or filtered out) between refetches.
+  useEffect(() => {
+    if (selectedProg && programmes.length > 0 && !programmes.find(p => p.id === selectedProg.id)) {
+      setSelectedProg(null);
+    }
+  }, [programmes, selectedProg]);
 
   const handleCreateProg = async () => {
+    // Client-side guard: pre-fix this sent empty name/code and waited for the
+    // server to 400.
+    if (!progForm.name?.trim()) { alert('Programme name is required.'); return; }
+    if (!progForm.code?.trim()) { alert('Programme code is required.'); return; }
+    if (progForm.code.trim().length < 2 || progForm.code.trim().length > 20) {
+      alert('Programme code must be 2-20 characters.'); return;
+    }
     try {
       await api.post('/programmes', {
-        name: progForm.name,
-        code: progForm.code,
+        name: progForm.name.trim(),
+        code: progForm.code.trim().toUpperCase(),
         durationYears: parseInt(progForm.durationYears) || 1,
         medium: progForm.medium,
         availableOffline: progForm.availableOffline,
@@ -128,6 +141,7 @@ export default function Programmes() {
     <PageWrapper title="Programmes & Batches" subtitle="Academic programmes and batch management">
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 20 }}>
         <Card title="Programmes" action={<Btn size="sm" onClick={() => setProgOpen(true)}>+</Btn>}>
+          <div style={{ maxHeight: '70vh', overflowY: 'auto' }}>
           {programmes.map(p => {
             const isSel = currentSelected?.id === p.id;
             return (
@@ -150,6 +164,7 @@ export default function Programmes() {
             );
           })}
           {programmes.length === 0 && <div style={{ color: '#7B8494', fontSize: 13, padding: 8 }}>No programmes yet.</div>}
+          </div>
         </Card>
 
         <Card title={currentSelected ? `${currentSelected.name} — Batches` : 'Select a programme'} action={currentSelected ? <Btn size="sm" onClick={() => setBatchOpen(true)}>+ Batch</Btn> : null}>

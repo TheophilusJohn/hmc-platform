@@ -109,6 +109,10 @@ router.post('/students/:id/ledger/charge', authenticate,
       if (feeTypeId) {
         const student = await prisma.studentProfile.findUnique({ where: { id } });
         const feeType = await prisma.feeType.findUnique({ where: { id: feeTypeId } });
+        // Guard against missing/inactive feeType — pre-fix this threw on
+        // `feeType.internationalAmount` when feeType was null.
+        if (!feeType) return res.status(400).json({ error: 'Invalid feeTypeId' });
+        if (feeType.isActive === false) return res.status(400).json({ error: 'Fee type is not active' });
         chargeAmount = Number(student?.studentType === 'INTERNATIONAL'
           ? feeType.internationalAmount
           : feeType.domesticAmount);
@@ -167,11 +171,13 @@ router.post('/fee-types/:id/bulk-charge/preview', authenticate, adminOnly, async
     const { scope, programmeId, batchId, studentIds } = req.body;
     const feeType = await prisma.feeType.findUnique({ where: { id: req.params.id } });
 
-    let where = {};
-    if (scope === 'all') where = {};
-    else if (scope === 'programme') where = { programmeId };
-    else if (scope === 'batch') where = { batchId };
-    else if (scope === 'individual') where = { id: { in: studentIds } };
+    // Always restrict to ACTIVE users — pre-fix the preview total included
+    // INACTIVE/GRADUATED/SUSPENDED students, wildly inflating the figure.
+    let where = { user: { status: 'ACTIVE' } };
+    if (scope === 'all') { /* no extra filter */ }
+    else if (scope === 'programme') where.programmeId = programmeId;
+    else if (scope === 'batch') where.batchId = batchId;
+    else if (scope === 'individual') where.id = { in: studentIds || [] };
 
     const students = await prisma.studentProfile.findMany({
       where,
@@ -221,135 +227,9 @@ router.post('/fee-types/:id/bulk-charge/apply', authenticate, adminOnly, async (
   } catch (err) { next(err); }
 });
 
-// POST /api/waivers — delegated to canonical waivers.js routes; keep route mounted for legacy callers
-router.post('/waivers', authenticate, adminOnly, async (req, res, next) => {
-  try {
-    const { studentId, ledgerId, waiverType, reason, customReason, validUntil } = req.body;
-    const amountOrPercent = Number(req.body.amountOrPercent);
-
-    if (!ledgerId || !studentId) return res.status(400).json({ error: 'studentId and ledgerId are required' });
-    if (waiverType !== 'FULL' && (!Number.isFinite(amountOrPercent) || amountOrPercent <= 0)) {
-      return res.status(400).json({ error: 'amountOrPercent must be a positive number' });
-    }
-    if (waiverType === 'PARTIAL_PERCENT' && amountOrPercent > 100) {
-      return res.status(400).json({ error: 'Percentage cannot exceed 100' });
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      const ledger = await tx.studentFeeLedger.findUnique({ where: { id: ledgerId } });
-      if (!ledger) throw Object.assign(new Error('Ledger entry not found'), { status: 404 });
-      if (ledger.studentId !== studentId) {
-        throw Object.assign(new Error('Ledger does not belong to this student'), { status: 400 });
-      }
-
-      // Idempotency: refuse if an unrevoked waiver already exists for this ledger
-      const existing = await tx.waiver.findFirst({
-        where: { ledgerId, revokedAt: null },
-      });
-      if (existing) {
-        throw Object.assign(new Error('A waiver is already active for this ledger entry. Revoke it first.'), { status: 409 });
-      }
-
-      let waivedAmount;
-      if (waiverType === 'FULL') waivedAmount = Number(ledger.balance);
-      else if (waiverType === 'PARTIAL_PERCENT') waivedAmount = (Number(ledger.balance) * amountOrPercent) / 100;
-      else waivedAmount = Math.min(amountOrPercent, Number(ledger.balance));
-
-      const waiver = await tx.waiver.create({
-        data: {
-          studentId, ledgerId, waiverType, amountOrPercent,
-          reason, customReason,
-          validUntil: validUntil ? new Date(validUntil) : null,
-          appliedById: req.user.id,
-        },
-      });
-
-      const newBalance = Math.max(0, Number(ledger.balance) - waivedAmount);
-      await tx.studentFeeLedger.update({
-        where: { id: ledgerId },
-        data: {
-          waivedAmount: Number(ledger.waivedAmount) + waivedAmount,
-          balance: newBalance,
-          status: newBalance === 0 ? 'WAIVED' : 'PARTIAL',
-        },
-      });
-
-      return { waiver, waivedAmount, ledger };
-    });
-
-    try {
-      const { createNotification } = require('../services/notification.service');
-      const student = await prisma.studentProfile.findUnique({ where: { id: studentId }, include: { user: true } });
-      if (student?.user) {
-        await createNotification(
-          student.user.id, 'waiver_applied', 'Waiver Applied',
-          `A waiver of ${result.ledger.currency === 'INR' ? '₹' : '$'}${result.waivedAmount.toFixed(2)} has been applied to your account.`
-        );
-      }
-    } catch (_e) {}
-
-    res.status(201).json({ waiver: result.waiver });
-  } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
-    next(err);
-  }
-});
-
-// PUT /api/waivers/:id/revoke — restore ledger balance immediately
-router.put('/waivers/:id/revoke', authenticate, adminOnly, async (req, res, next) => {
-  try {
-    const { reason } = req.body;
-    const result = await prisma.$transaction(async (tx) => {
-      const waiver = await tx.waiver.findUnique({
-        where: { id: req.params.id },
-        include: { ledger: true, student: { include: { user: true } } },
-      });
-      if (!waiver) throw Object.assign(new Error('Waiver not found'), { status: 404 });
-      if (waiver.revokedAt) throw Object.assign(new Error('Waiver is already revoked'), { status: 400 });
-
-      // Compute the amount this waiver actually deducted
-      let originalWaived;
-      const ledger = waiver.ledger;
-      const baseAmount = Number(ledger.amount);
-      if (waiver.waiverType === 'FULL') originalWaived = Number(ledger.waivedAmount);
-      else if (waiver.waiverType === 'PARTIAL_PERCENT') originalWaived = (baseAmount * Number(waiver.amountOrPercent)) / 100;
-      else originalWaived = Math.min(Number(waiver.amountOrPercent), Number(ledger.waivedAmount));
-
-      const newWaived = Math.max(0, Number(ledger.waivedAmount) - originalWaived);
-      const newBalance = Number(ledger.balance) + originalWaived;
-      await tx.studentFeeLedger.update({
-        where: { id: ledger.id },
-        data: {
-          waivedAmount: newWaived,
-          balance: newBalance,
-          status: newWaived > 0 ? 'PARTIAL' : (newBalance > 0 ? 'UNPAID' : 'PAID'),
-        },
-      });
-
-      const now = new Date();
-      await tx.waiver.update({
-        where: { id: req.params.id },
-        data: { revokedAt: now, revokeReason: reason },
-      });
-
-      return { waiver, restored: originalWaived, effectiveDate: now };
-    });
-
-    if (result.waiver.student?.user) {
-      try {
-        const { createNotification } = require('../services/notification.service');
-        await createNotification(
-          result.waiver.student.user.id, 'waiver_revoked', 'Waiver Removed',
-          `Your waiver has been removed. ${result.restored.toFixed(2)} has been re-added to your balance.`
-        );
-      } catch (_e) {}
-    }
-
-    res.json({ message: 'Waiver revoked', effectiveDate: result.effectiveDate, restored: result.restored });
-  } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
-    next(err);
-  }
-});
+// Legacy /api/fees/waivers routes were removed — apply/revoke math diverged
+// from the canonical waivers.js routes (mounted at /api/waivers). The FE has
+// always called the canonical /api/waivers path; nothing in the codebase
+// references /api/fees/waivers any more.
 
 module.exports = router;

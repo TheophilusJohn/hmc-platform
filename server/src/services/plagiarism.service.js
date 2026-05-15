@@ -39,6 +39,13 @@ async function checkExternalSources(text) {
   const apiKey = process.env.COPYLEAKS_API_KEY;
   if (!email || !apiKey) return { score: 0, sources: [] };
 
+  // Without an API_URL the webhook target collapses to `undefined/api/...` and
+  // Copyleaks silently drops the callback. Refuse to start the scan so the
+  // caller can fall back to the manual-review queue instead of black-holing.
+  const apiUrl = process.env.API_URL;
+  if (!apiUrl) {
+    return { score: 0, sources: [], error: 'API_URL not configured; plagiarism webhook would be unreachable' };
+  }
   try {
     const loginRes = await axios.post('https://id.copyleaks.com/v3/account/login/api', { email, key: apiKey });
     const accessToken = loginRes.data.access_token;
@@ -47,7 +54,7 @@ async function checkExternalSources(text) {
     await axios.post(`https://api.copyleaks.com/v3/businesses/start/${scanId}`, {
       base64: Buffer.from(text).toString('base64'),
       filename: 'submission.txt',
-      properties: { webhooks: { status: `${process.env.API_URL}/api/plagiarism/webhook/{STATUS}` } },
+      properties: { webhooks: { status: `${apiUrl}/api/plagiarism/webhook/{STATUS}` } },
     }, { headers: { Authorization: `Bearer ${accessToken}` } });
 
     return { scanId, score: 0, sources: [], status: 'scanning' };

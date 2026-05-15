@@ -23,10 +23,20 @@ function calculateCGPA(enrollments) {
 }
 
 // GET /api/reports/academic/marksheet/:studentId
+// FACULTY callers see only their own taught subjects on a student's marksheet
+// — pre-fix faculty could see the full marksheet of any student.
 router.get('/academic/marksheet/:studentId', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
+    let enrollmentWhere = { studentId: req.params.studentId };
+    if (req.user.role === 'FACULTY') {
+      const fp = await prisma.facultyProfile.findUnique({
+        where: { userId: req.user.id }, select: { id: true },
+      });
+      if (!fp) return res.json([]);
+      enrollmentWhere.subject = { facultyId: fp.id };
+    }
     const enrollments = await prisma.studentSubjectEnrollment.findMany({
-      where: { studentId: req.params.studentId },
+      where: enrollmentWhere,
       include: { subject: { include: { semester: true, programme: true } } },
       orderBy: [{ subject: { semester: { academicYear: 'asc' } } }],
     });
@@ -51,15 +61,17 @@ router.get('/academic/batch/:batchId', authenticate, facultyOrAbove, async (req,
     });
 
     const report = subjects.map(s => {
-      const marks = s.enrollments.map(e => e.totalMarks).filter(v => v !== null);
-      const avg = marks.length ? marks.reduce((a, b) => a + b, 0) / marks.length : 0;
+      const marks = s.enrollments.map(e => e.totalMarks).filter(v => v !== null && v !== undefined);
+      const avg = marks.length ? marks.reduce((a, b) => a + b, 0) / marks.length : null;
       const grades = s.enrollments.reduce((acc, e) => { if (e.grade) acc[e.grade] = (acc[e.grade] || 0) + 1; return acc; }, {});
       return {
         subject: { id: s.id, name: s.name, code: s.code },
         students: s.enrollments.length,
-        average: Math.round(avg * 10) / 10,
-        highest: marks.length ? Math.max(...marks) : 0,
-        lowest: marks.length ? Math.min(...marks) : 0,
+        // null sentinels (rather than 0) signal "no marks yet" to the UI so it
+        // can render — instead of misleadingly showing zeros.
+        average: marks.length ? Math.round(avg * 10) / 10 : null,
+        highest: marks.length ? Math.max(...marks) : null,
+        lowest: marks.length ? Math.min(...marks) : null,
         passRate: s.enrollments.length ? Math.round((s.enrollments.filter(e => e.resultStatus === 'PASS').length / s.enrollments.length) * 100) : 0,
         gradeDistribution: grades,
       };

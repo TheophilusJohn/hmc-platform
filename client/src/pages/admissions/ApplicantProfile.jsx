@@ -4,7 +4,21 @@ import api from '../../utils/api';
 
 const STAGES = ['RECEIVED','DOCS_REVIEW','INTERVIEW_SCHEDULED','INTERVIEW_DONE','WAITLISTED','ACCEPTED','ENROLLED'];
 const STAGE_LABELS = { RECEIVED:'Received', DOCS_REVIEW:'Docs Review', INTERVIEW_SCHEDULED:'Interview Scheduled', INTERVIEW_DONE:'Interview Done', WAITLISTED:'Waitlisted', ACCEPTED:'Accepted', ENROLLED:'Enrolled', REJECTED:'Rejected' };
-const DOCS = ['Photo ID', 'Academic Transcripts', 'Church Letter', 'Birth Certificate', 'Medical Certificate', 'Statement of Faith', 'Application Form'];
+// Canonical docType keys match ApplicantDocument.docType examples from
+// prisma/schema.prisma: 'photo', 'id_proof', 'academic_certs', 'health_cert',
+// etc. Pre-fix the label-to-key lookup used `d.toLowerCase().replace(/ /g,'_')`
+// which produced 'photo_id' / 'academic_transcripts' / 'church_letter' — none
+// matched, so every doc showed "Missing".
+const DOCS = [
+  { label: 'Photo ID', key: 'id_proof' },
+  { label: 'Photo', key: 'photo' },
+  { label: 'Academic Certificates', key: 'academic_certs' },
+  { label: 'Church Letter', key: 'church_letter' },
+  { label: 'Birth Certificate', key: 'birth_certificate' },
+  { label: 'Health Certificate', key: 'health_cert' },
+  { label: 'Statement of Faith', key: 'statement_of_faith' },
+  { label: 'Application Form', key: 'application_form' },
+];
 
 export default function ApplicantProfile({ applicant: initial, onClose, onUpdate }) {
   const [applicant, setApplicant] = useState(initial);
@@ -54,6 +68,15 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
   const [savingInterview, setSavingInterview] = useState(false);
   const saveInterview = async () => {
     if (savingInterview) return;
+    // Clamp the score to 0-10. The HTML min/max attributes don't enforce on
+    // paste/programmatic input, so a "1000" could otherwise reach the API.
+    if (interviewScore !== '' && interviewScore !== null && interviewScore !== undefined) {
+      const n = Number(interviewScore);
+      if (!Number.isFinite(n) || n < 0 || n > 10) {
+        alert('Interview score must be between 0 and 10.');
+        return;
+      }
+    }
     setSavingInterview(true);
     try {
       await api.post(`/admissions/${applicant.id}/interview`, { interviewScore, interviewNotes });
@@ -142,10 +165,10 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
           {tab === 'docs' && (
             <div>
               {DOCS.map(d => {
-                const doc = applicant.documents?.find(x => x.docType === d.toLowerCase().replace(/ /g,'_'));
+                const doc = applicant.documents?.find(x => x.docType === d.key);
                 return (
-                  <div key={d} style={{ display: 'flex', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #DDE1E7' }}>
-                    <div style={{ flex: 1, fontSize: 13, color: '#3D4450' }}>{d}</div>
+                  <div key={d.key} style={{ display: 'flex', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #DDE1E7' }}>
+                    <div style={{ flex: 1, fontSize: 13, color: '#3D4450' }}>{d.label}</div>
                     {doc ? <Badge color={doc.verified ? 'green' : 'amber'}>{doc.verified ? 'Verified' : 'Received'}</Badge> : <Badge color="red">Missing</Badge>}
                   </div>
                 );

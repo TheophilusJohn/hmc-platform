@@ -89,8 +89,11 @@ async function generateUnofficialTranscript(studentProfileId) {
       doc.moveDown(0.3);
 
       for (const e of subjects) {
-        const total = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-        const line = `${(e.subject.code || '').padEnd(16)}${(e.subject.name || '').substring(0, 32).padEnd(33)}${String(e.subject.creditHours || '').padEnd(9)}${String(total || '-').padEnd(9)}${(e.grade || 'P').padEnd(8)}${e.enrollmentType === 'ARREAR' ? 'A' : (e.resultStatus || 'P')}`;
+        // Show "—" until both IA and ESE are recorded — pre-fix, an enrollment
+        // with only IA marked showed "IA + 0" as the total, misleadingly low.
+        const totalKnown = e.iaMarks != null && e.eseMarks != null;
+        const total = totalKnown ? (e.iaMarks + e.eseMarks) : null;
+        const line = `${(e.subject.code || '').padEnd(16)}${(e.subject.name || '').substring(0, 32).padEnd(33)}${String(e.subject.creditHours || '').padEnd(9)}${String(total ?? '—').padEnd(9)}${(e.grade || '—').padEnd(8)}${e.enrollmentType === 'ARREAR' ? 'A' : (e.resultStatus || '—')}`;
         doc.fillColor('#1A1D23').font('Helvetica').fontSize(9).text(line);
       }
       doc.moveDown();
@@ -112,7 +115,7 @@ async function generateOfficialTranscript(studentProfileId, requestId, verificat
     doc.fillColor(GRAY).font('Helvetica').fontSize(10)
       .text(`Student ID: ${profile.user?.userIdDisplay || ''}`)
       .text(`Study Mode: ${(profile.studyMode || '').toUpperCase()}`)
-      .text(`Date Issued: ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}`);
+      .text(`Date Issued: ${new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'long', year: 'numeric' })}`);
     doc.moveDown();
 
     for (const { semester, subjects } of semesters) {
@@ -121,8 +124,9 @@ async function generateOfficialTranscript(studentProfileId, requestId, verificat
       doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke(GOLD);
       doc.moveDown(0.3);
       for (const e of subjects) {
-        const total = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-        const line = `${(e.subject.code || '').padEnd(16)}${(e.subject.name || '').substring(0, 32).padEnd(33)}${String(e.subject.creditHours || '').padEnd(9)}${String(total || '-').padEnd(9)}${e.grade || 'P'}`;
+        const totalKnown = e.iaMarks != null && e.eseMarks != null;
+        const total = totalKnown ? (e.iaMarks + e.eseMarks) : null;
+        const line = `${(e.subject.code || '').padEnd(16)}${(e.subject.name || '').substring(0, 32).padEnd(33)}${String(e.subject.creditHours || '').padEnd(9)}${String(total ?? '—').padEnd(9)}${e.grade || '—'}`;
         doc.fillColor('#1A1D23').font('Helvetica').fontSize(9).text(line);
       }
       doc.moveDown();
@@ -155,11 +159,12 @@ async function generateDegreeCertificate(studentProfileId, cert) {
     doc.fillColor(GOLD).fontSize(14).text('Greater Noida, U.P., India', 0, 115, { align: 'center' });
 
     doc.fillColor(GRAY).font('Helvetica').fontSize(14).text('This is to certify that', 0, 180, { align: 'center' });
-    doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(24).text(`${profile.firstName} ${profile.lastName}`, 0, 210, { align: 'center' });
+    const fullName = [profile?.firstName, profile?.lastName].filter(Boolean).join(' ').trim() || profile?.user?.userIdDisplay || 'Student';
+    doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(24).text(fullName, 0, 210, { align: 'center' });
     doc.moveTo(doc.page.width / 2 - 100, 245).lineTo(doc.page.width / 2 + 100, 245).strokeColor(GOLD).stroke();
     doc.fillColor(GRAY).font('Helvetica').fontSize(14).text('has successfully completed the requirements for the degree of', 0, 260, { align: 'center' });
     doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(20).text(cert.programmeName || 'Bachelor of Theology', 0, 290, { align: 'center' });
-    doc.fillColor(GRAY).fontSize(12).text(`Graduation Date: ${new Date(cert.graduationDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}`, 0, 330, { align: 'center' });
+    doc.fillColor(GRAY).fontSize(12).text(`Graduation Date: ${new Date(cert.graduationDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'long', year: 'numeric' })}`, 0, 330, { align: 'center' });
     doc.text(`Certificate No: ${cert.certificateNumber}`, 0, 350, { align: 'center' });
 
     doc.image(qrBuffer, doc.page.width / 2 - 40, 400, { width: 80, height: 80 });
@@ -183,7 +188,7 @@ async function generateReceipt(paymentId) {
 
     doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(12).text(`Receipt No: ${payment.receiptNo}`);
     doc.fillColor(GRAY).font('Helvetica').fontSize(10)
-      .text(`Date: ${new Date(payment.paidAt).toLocaleDateString('en-IN')}`)
+      .text(`Date: ${new Date(payment.paidAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`)
       .text(`Student: ${sp?.firstName || ''} ${sp?.lastName || ''} (${sp?.user?.userIdDisplay || ''})`)
       .text(`Fee: ${payment.ledger?.feeType?.name || 'Fee Payment'}`)
       .text(`Amount: ${symbol}${Number(payment.amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
@@ -213,8 +218,9 @@ async function generateMarksheet(studentProfileId, semesterId) {
 
     doc.fillColor(GRAY).fontSize(9).text('Code            Subject                          Credits  ESE    IA     Total  Grade');
     for (const e of enrollments) {
-      const total = (e.iaMarks ?? 0) + (e.eseMarks ?? 0);
-      doc.font('Helvetica').text(`${(e.subject.code || '').padEnd(16)}${(e.subject.name || '').substring(0, 32).padEnd(33)}${String(e.subject.creditHours || '').padEnd(9)}${String(e.eseMarks ?? '-').padEnd(7)}${String(e.iaMarks ?? '-').padEnd(7)}${String(total || '-').padEnd(7)}${e.grade || '-'}`);
+      const totalKnown = e.iaMarks != null && e.eseMarks != null;
+      const total = totalKnown ? (e.iaMarks + e.eseMarks) : null;
+      doc.font('Helvetica').text(`${(e.subject.code || '').padEnd(16)}${(e.subject.name || '').substring(0, 32).padEnd(33)}${String(e.subject.creditHours || '').padEnd(9)}${String(e.eseMarks ?? '—').padEnd(7)}${String(e.iaMarks ?? '—').padEnd(7)}${String(total ?? '—').padEnd(7)}${e.grade || '—'}`);
     }
     addFooter(doc);
   });

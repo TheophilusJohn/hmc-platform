@@ -52,7 +52,17 @@ export default function Login() {
     try {
       await api.post('/auth/forgot-password', { email: forgotEmail });
       setForgotSent(true);
-    } catch { setForgotSent(true); }
+    } catch (err) {
+      // 4xx (incl. "unknown email") looks like success — don't leak whether the
+      // address exists. Network/5xx failures must NOT silently show success
+      // though, since the user expects a real email and won't get one.
+      const status = err?.response?.status;
+      if (!status || status >= 500) {
+        setError('Could not reach the server. Please try again in a moment.');
+      } else {
+        setForgotSent(true);
+      }
+    }
   };
 
   return (
@@ -127,6 +137,7 @@ export default function Login() {
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#3D4450', marginBottom: 6 }}>Email or User ID</label>
               <input value={email} onChange={e => setEmail(e.target.value)}
+                type="text" inputMode="email" autoComplete="username"
                 style={{ width: '100%', padding: '10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box', background: '#fff' }}
                 placeholder="admin@hmc.edu or HMC-S-0001" />
             </div>
@@ -134,6 +145,7 @@ export default function Login() {
               <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#3D4450', marginBottom: 6 }}>Password</label>
               <div style={{ position: 'relative' }}>
                 <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                  autoComplete="current-password"
                   style={{ width: '100%', padding: '10px 40px 10px 12px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box', background: '#fff' }}
                   placeholder="••••••••" />
                 <button type="button" onClick={() => setShowPw(!showPw)}

@@ -12,21 +12,26 @@ export default function SystemSettings() {
   useEffect(() => { if (data) setSettings(data?.settings || data || {}); }, [data]);
 
   const handleSave = async (section) => {
-    await api.put(`/settings`, { [section]: settings[section] });
-    refetch();
-    alert('Settings saved.');
+    try {
+      await api.put(`/settings`, { [section]: settings[section] });
+      refetch();
+      alert('Settings saved.');
+    } catch (e) {
+      // Pre-fix this swallowed errors and always alerted "saved" — admins had
+      // no way to know a 5xx had silently dropped their config change.
+      alert('Failed to save: ' + (e?.response?.data?.error || e.message));
+    }
   };
 
   const set = (section, key, val) => setSettings(s => ({ ...s, [section]: { ...(s[section] || {}), [key]: val } }));
   const get = (section, key, def = '') => settings[section]?.[key] ?? def;
 
+  // 'banks' and 'privacy' had no render path — removed to avoid blank tabs.
   const tabs = [
     { value: 'college', label: 'College' },
     { value: 'communication', label: 'Communication' },
-    { value: 'banks', label: 'Bank Accounts' },
     { value: 'gateways', label: 'Payment Gateways' },
     { value: 'security', label: 'Security' },
-    { value: 'privacy', label: 'Privacy' },
     { value: 'audit', label: 'Audit Log' },
   ];
 

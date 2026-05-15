@@ -12,6 +12,7 @@ function deriveAction(method, path) {
 
 // Extract table name from route path
 function deriveTable(path) {
+  if (!path || !path.startsWith('/api/')) return 'non_api';
   const segments = path.replace('/api/', '').split('/');
   return segments[0]?.replace(/-/g, '_') || 'unknown';
 }

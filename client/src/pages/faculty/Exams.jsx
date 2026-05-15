@@ -43,6 +43,23 @@ export default function Exams() {
     if (!examForm.title.trim()) { alert('Title required'); return; }
     const subjId = selectedSubject || examForm.subjectId;
     if (!subjId) { alert('Subject required'); return; }
+    // Validate datetimes BEFORE calling toISOString() — pre-fix an invalid
+    // datetime string threw RangeError outside the try/catch and crashed the handler.
+    let startISO = null, endISO = null;
+    if (examForm.startDatetime) {
+      const s = new Date(examForm.startDatetime);
+      if (isNaN(s.getTime())) { alert('Start date/time is invalid.'); return; }
+      startISO = s.toISOString();
+    }
+    if (examForm.endDatetime) {
+      const e = new Date(examForm.endDatetime);
+      if (isNaN(e.getTime())) { alert('End date/time is invalid.'); return; }
+      endISO = e.toISOString();
+    }
+    if (startISO && endISO && new Date(endISO) <= new Date(startISO)) {
+      alert('End date/time must be after start date/time.');
+      return;
+    }
     const payload = {
       title: examForm.title,
       type: examForm.type,
@@ -53,8 +70,8 @@ export default function Exams() {
       passMark: parseInt(examForm.passMark) || 40,
       durationMins: parseInt(examForm.durationMins) || 60,
       maxAttempts: parseInt(examForm.maxAttempts) || 1,
-      startDatetime: examForm.startDatetime ? new Date(examForm.startDatetime).toISOString() : null,
-      endDatetime: examForm.endDatetime ? new Date(examForm.endDatetime).toISOString() : null,
+      startDatetime: startISO,
+      endDatetime: endISO,
     };
     try {
       await api.post('/exams', payload);

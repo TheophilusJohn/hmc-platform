@@ -74,6 +74,11 @@ router.get('/my', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const VALID_EXCEPTION_TYPES = new Set([
+  'MEDICAL_LEAVE', 'ATTENDANCE_OVERRIDE', 'MARKS_OVERRIDE',
+  'GRADE_CORRECTION', 'REPEAT_SUBJECT', 'WITHDRAWAL_WITHOUT_PENALTY',
+]);
+
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const { studentId: bodyStudentId, subjectId, semesterId, type, reason, requestedValue, attachmentUrl } = req.body;
@@ -86,12 +91,16 @@ router.post('/', authenticate, async (req, res, next) => {
     if (!studentId || !type || !reason) {
       return res.status(400).json({ error: 'studentId, type, reason required' });
     }
+    const normalizedType = String(type).toUpperCase();
+    if (!VALID_EXCEPTION_TYPES.has(normalizedType)) {
+      return res.status(400).json({ error: `type must be one of: ${[...VALID_EXCEPTION_TYPES].join(', ')}` });
+    }
     const exc = await prisma.academicException.create({
       data: {
         studentId,
         subjectId: subjectId || null,
         semesterId: semesterId || null,
-        type: type.toUpperCase(),
+        type: normalizedType,
         reason,
         requestedValue: requestedValue || null,
         attachmentUrl: attachmentUrl || null,

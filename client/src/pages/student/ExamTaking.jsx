@@ -343,7 +343,10 @@ export default function ExamTaking() {
                     value={answers[q.id] || ''}
                     onChange={e => setAnswer(q.id, e.target.value)}
                     onCopy={e => e.preventDefault()}
+                    onCut={e => e.preventDefault()}
                     onPaste={e => e.preventDefault()}
+                    onContextMenu={e => e.preventDefault()}
+                    onDragStart={e => e.preventDefault()}
                     placeholder="Type your answer here…"
                     style={{ width: '100%', minHeight: 240, padding: '12px 16px', border: '1px solid #DDE1E7', borderRadius: 8, fontSize: 14, fontFamily: "'DM Sans',sans-serif", resize: 'vertical', boxSizing: 'border-box', outline: 'none', lineHeight: 1.6 }}
                   />
