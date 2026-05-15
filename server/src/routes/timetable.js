@@ -1,19 +1,135 @@
 // server/src/routes/timetable.js
-// STUB — the TimetableSlot Prisma model is not in schema.prisma, so every
-// route in this file throws a `prisma.timetableSlot is undefined` error at
-// runtime. Disabled until the schema is added (see audit-fresh.md §4 Critical).
-// Original implementation lives in git history (commit before this stub).
 const express = require('express');
 const router = express.Router();
+const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { adminOrTA } = require('../middleware/rbac');
 
-// Return an empty list so the FE Timetable page renders an empty grid instead
-// of erroring on parse. Other methods 501.
-router.get('/my', authenticate, (_req, res) => res.json({ slots: [] }));
-router.get('/', authenticate, (_req, res) => res.json({ slots: [] }));
+function flatten(s) {
+  const fp = s.faculty?.facultyProfile;
+  return {
+    id: s.id,
+    day: s.day,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    room: s.room,
+    notes: s.notes,
+    subjectId: s.subjectId,
+    subjectCode: s.subject?.code,
+    subjectName: s.subject?.name,
+    facultyId: s.facultyId,
+    facultyName: fp ? `${fp.firstName} ${fp.lastName}` : null,
+    semesterId: s.semesterId,
+    semesterName: s.semester?.name,
+  };
+}
 
-router.all('*', authenticate, (_req, res) => {
-  res.status(501).json({ error: 'Timetable feature not yet enabled. Pending schema migration.' });
+router.get('/', authenticate, async (req, res, next) => {
+  try {
+    const { semesterId, subjectId, facultyId } = req.query;
+    const where = {};
+    if (semesterId) where.semesterId = semesterId;
+    if (subjectId) where.subjectId = subjectId;
+    if (facultyId) where.facultyId = facultyId;
+    const slots = await prisma.timetableSlot.findMany({
+      where,
+      include: {
+        subject: { select: { code: true, name: true } },
+        faculty: { select: { facultyProfile: { select: { firstName: true, lastName: true } } } },
+        semester: { select: { name: true } },
+      },
+      orderBy: [{ day: 'asc' }, { startTime: 'asc' }],
+    });
+    res.json({ slots: slots.map(flatten) });
+  } catch (err) { next(err); }
+});
+
+router.get('/my', authenticate, async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    let slots = [];
+    if (['FACULTY', 'TEACHER_ADMIN'].includes(req.user.role)) {
+      slots = await prisma.timetableSlot.findMany({
+        where: { facultyId: userId },
+        include: {
+          subject: { select: { code: true, name: true } },
+          faculty: { select: { facultyProfile: { select: { firstName: true, lastName: true } } } },
+          semester: { select: { name: true } },
+        },
+        orderBy: [{ day: 'asc' }, { startTime: 'asc' }],
+      });
+    } else if (req.user.role === 'STUDENT') {
+      const sp = await prisma.studentProfile.findUnique({ where: { userId }, select: { batchId: true } });
+      if (sp?.batchId) {
+        slots = await prisma.timetableSlot.findMany({
+          where: { subject: { batchId: sp.batchId } },
+          include: {
+            subject: { select: { code: true, name: true } },
+            faculty: { select: { facultyProfile: { select: { firstName: true, lastName: true } } } },
+            semester: { select: { name: true } },
+          },
+          orderBy: [{ day: 'asc' }, { startTime: 'asc' }],
+        });
+      }
+    }
+    res.json({ slots: slots.map(flatten) });
+  } catch (err) { next(err); }
+});
+
+router.post('/', authenticate, adminOrTA, async (req, res, next) => {
+  try {
+    const { semesterId, subjectId, facultyId, day, startTime, endTime, room, notes } = req.body;
+    if (!semesterId || !subjectId || !day || !startTime || !endTime) {
+      return res.status(400).json({ error: 'semesterId, subjectId, day, startTime, endTime required' });
+    }
+    if (startTime >= endTime) {
+      return res.status(400).json({ error: 'endTime must be after startTime' });
+    }
+    const dayUpper = day.toUpperCase();
+    // Faculty double-booking check: reject if same faculty has any overlapping slot on the same day.
+    // Times are stored as canonical "HH:MM" strings, so lexicographic compare is correct.
+    if (facultyId) {
+      const conflict = await prisma.timetableSlot.findFirst({
+        where: {
+          facultyId,
+          day: dayUpper,
+          AND: [
+            { startTime: { lt: endTime } },
+            { endTime: { gt: startTime } },
+          ],
+        },
+        include: { subject: { select: { code: true, name: true } } },
+      });
+      if (conflict) {
+        return res.status(409).json({
+          error: `Faculty already has ${conflict.subject?.code || 'another slot'} on ${dayUpper} from ${conflict.startTime} to ${conflict.endTime}.`,
+        });
+      }
+    }
+    const slot = await prisma.timetableSlot.create({
+      data: { semesterId, subjectId, facultyId: facultyId || null, day: dayUpper, startTime, endTime, room: room || null, notes: notes || null },
+    });
+    res.status(201).json({ slot });
+  } catch (err) { next(err); }
+});
+
+router.put('/:id', authenticate, adminOrTA, async (req, res, next) => {
+  try {
+    const data = {};
+    ['startTime', 'endTime', 'room', 'notes', 'facultyId', 'subjectId'].forEach(f => {
+      if (req.body[f] !== undefined) data[f] = req.body[f];
+    });
+    if (req.body.day !== undefined) data.day = req.body.day.toUpperCase();
+    const slot = await prisma.timetableSlot.update({ where: { id: req.params.id }, data });
+    res.json({ slot });
+  } catch (err) { next(err); }
+});
+
+router.delete('/:id', authenticate, adminOrTA, async (req, res, next) => {
+  try {
+    await prisma.timetableSlot.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

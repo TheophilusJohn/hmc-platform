@@ -39,17 +39,14 @@ async function computeBelowAttendance() {
 
 router.get('/stats', authenticate, adminOrTA, async (req, res, next) => {
   try {
-    // NOTE: AcademicException model is not yet in schema — pending feature.
-    // See server/src/routes/exceptions.js stub. Report 0 to keep dashboard tile
-    // alive instead of crashing the whole route.
-    const [activeSubjects, marksOverdueSems] = await Promise.all([
+    const [activeSubjects, exceptionsPending, marksOverdueSems] = await Promise.all([
       prisma.subject.count({ where: { status: 'active' } }),
+      prisma.academicException.count({ where: { status: 'PENDING' } }),
       prisma.semester.findMany({
         where: { marksDeadline: { lt: new Date() }, status: 'ACTIVE' },
         select: { subjects: { select: { enrollments: { where: { resultStatus: 'PENDING' }, select: { id: true } } } } },
       }),
     ]);
-    const exceptionsPending = 0;
     const marksOverdue = marksOverdueSems.reduce(
       (sum, sem) => sum + sem.subjects.reduce((a, sub) => a + sub.enrollments.length, 0),
       0
@@ -62,7 +59,8 @@ router.get('/stats', authenticate, adminOrTA, async (req, res, next) => {
 router.get('/pending-actions', authenticate, adminOrTA, async (req, res, next) => {
   try {
     const items = [];
-    // AcademicException model not yet in schema — skip until enabled.
+    const excCount = await prisma.academicException.count({ where: { status: 'PENDING' } });
+    if (excCount > 0) items.push({ type: 'exceptions', severity: 'high', description: `${excCount} academic exception${excCount === 1 ? '' : 's'} awaiting review`, link: '/ta/exceptions' });
     const unassigned = await prisma.subject.count({ where: { facultyId: null, status: 'active' } });
     if (unassigned > 0) items.push({ type: 'unassigned', severity: 'medium', description: `${unassigned} subject${unassigned === 1 ? '' : 's'} without faculty`, link: '/ta/assignments' });
     const revCount = await prisma.revaluation.count({ where: { status: 'pending' } });

@@ -77,13 +77,18 @@ router.post('/units/:id/content', authenticate, facultyOrAbove, async (req, res,
 
 router.put('/content/:id', authenticate, facultyOrAbove, async (req, res, next) => {
   try {
-    // Whitelist editable content fields (never `unitId`).
-    const { type, contentUrl, contentText, orderIndex } = req.body;
+    // Whitelist editable content fields (never `unitId`). All listed fields
+    // exist on the canonical UnitContent model in server/prisma/schema.prisma.
+    const { type, contentUrl, contentText, orderIndex, title, description, deadline, isPublished } = req.body;
     const data = {};
     if (type !== undefined) data.type = type;
     if (contentUrl !== undefined) data.contentUrl = contentUrl;
     if (contentText !== undefined) data.contentText = contentText;
     if (orderIndex !== undefined) data.orderIndex = parseInt(orderIndex, 10);
+    if (title !== undefined) data.title = title;
+    if (description !== undefined) data.description = description;
+    if (deadline !== undefined) data.deadline = deadline ? new Date(deadline) : null;
+    if (isPublished !== undefined) data.isPublished = !!isPublished;
     const content = await prisma.unitContent.update({ where: { id: req.params.id }, data });
     res.json(content);
   } catch (err) { next(err); }
