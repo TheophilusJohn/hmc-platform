@@ -877,7 +877,8 @@ model Applicant {
   programmeId       String
   studentType       StudentType
   pipelineStage     PipelineStage @default(RECEIVED)
-  formData          Json          // JSONB — full application form
+  formData          Json          // JSONB — frozen snapshot of draft.formData on submit;
+                                  // back-compat with existing flatten() / Pipeline.jsx readers
   referralCode      String?
   interviewScore    Int?
   interviewNotes    String?
@@ -890,8 +891,94 @@ model Applicant {
   offerExpiresAt    DateTime?
   convertedToUserId String?
   intakeYear        Int
-  healthDeclaration Json?
+  healthDeclaration Json?         // legacy — top-level declaration assent JSON
   status            String        @default("active") // active | archived | expired
+  // ── Public application form (Phase 2) — additive nullable columns ────────────
+  // Where the row came from — 'MANUAL' (admin /admissions POST) or 'PUBLIC_FORM'.
+  source            String?       @default("MANUAL")
+  submittedAt       DateTime?     // when the public draft was submitted (null for admin-created)
+  // Programme selection (alongside existing programmeId / studentType enum)
+  programmeCode     String?       // mirror of Programme.code for query convenience
+  // 'OFFLINE' | 'ONLINE'. Required for DOMESTIC applicants (campus work
+  // scholarship only applies to OFFLINE). INTERNATIONAL applicants are implicit
+  // ONLINE — the submit handler hardcodes that, no body field needed.
+  studyMode         String?
+  // Personal information
+  gender                  String?
+  dateOfBirth             DateTime? @db.Date
+  placeOfBirth            String?
+  nationality             String?
+  maritalStatus           String?
+  spouseName              String?
+  childrenInfo            String?
+  motherTongue            String?
+  // Addresses
+  presentAddressLine      String?
+  presentAddressState     String?
+  presentAddressCountry   String?
+  presentAddressPin       String?
+  permanentAddressLine    String?
+  permanentAddressState   String?
+  permanentAddressCountry String?
+  permanentAddressPin     String?
+  // Contact
+  mobile                  String?
+  whatsapp                String?
+  emergencyContact        String?
+  // International-only — populated when studentType=INTERNATIONAL
+  passportNumber          String?
+  passportCountryOfIssue  String?
+  countryOfResidence      String?
+  cityOfResidence         String?
+  currentVisaStatus       String?
+  intendedIndianVisa      String?
+  indiaEmergencyContact   String?
+  // Background narrative
+  substanceHistory        String?  @db.Text
+  criminalHistory         String?  @db.Text
+  influenceForApplying    String?  @db.Text
+  // Education narrative
+  technicalQualification    String?
+  theologicalQualification  String?
+  currentlyEmployed         String?
+  workExperience            String? @db.Text
+  // Spiritual
+  receivedChrist          Boolean?
+  receivedChristWhen      String?
+  waterBaptism            Boolean?
+  waterBaptismWhen        String?
+  salvationTestimony      String?  @db.Text
+  churchDenomination      String?
+  churchName              String?
+  churchAddress           String?  @db.Text
+  pastorName              String?
+  pastorAddress           String?  @db.Text
+  holySpiritInfilling     String?
+  callForMinistry         String?
+  // Financial
+  sponsoredByOrg          String?
+  paymentMethod           String?  // 'fees' | 'workScholarship'
+  commitTwoHoursDaily     Boolean? // DOMESTIC-only workScholarship commitment
+  feeResponsibility       String?
+  sponsorName             String?
+  sponsorDetails          String?  @db.Text
+  sponsorContact          String?
+  sponsorEmail            String?
+  needsFinancialAid       Boolean? // INTERNATIONAL-only
+  financialAidNote        String?  @db.Text
+  // Health responses (25 yes/no items) — distinct from legacy healthDeclaration
+  healthResponses         Json?
+  // Declaration assents (form-level booleans)
+  studentDeclarationAgreed     Boolean?
+  parentDeclarationAgreed      Boolean?
+  commitmentStatementAgreed    Boolean?
+  feeDeclarationAgreed         Boolean?
+  feeDeclarationSponsorName    String?
+  feeDeclarationSponsorContact String?
+  feeDeclarationSponsorEmail   String?
+  // Link to the originating draft (one-to-one)
+  draftId           String?       @unique
+  // ─────────────────────────────────────────────────────────────────────────────
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -901,21 +988,34 @@ model Applicant {
   documents         ApplicantDocument[]
   references        ApplicantReference[]
   referrals         Referral[]    @relation("ReferredApplicant")
+  draft             ApplicantDraft?      @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  educationEntries  ApplicantEducation[]
+  languages         ApplicantLanguage[]
 
   @@index([programmeId])
   @@index([pipelineStage])
   @@index([status])
   @@index([intakeYear])
+  @@index([source])
 }
 
 model ApplicantDocument {
   id          String   @id @default(uuid())
   applicantId String
-  docType     String   // photo | id_proof | academic_certs | health_cert | etc.
-  fileUrl     String
+  // Original admin-created docType vocabulary: photo | id_proof | academic_certs | health_cert.
+  // Public-form (Phase 2) docTypes: PHOTO | TRANSCRIPT | MARKSHEET | REFERENCE_PASTORAL |
+  // REFERENCE_LEADER | PASSPORT_COPY. Validated in the route handler.
+  docType     String
+  fileUrl     String        // legacy column; populated with the MinIO object path on Phase 2 uploads
   uploadedAt  DateTime @default(now())
   verified    Boolean  @default(false)
   verifiedById String?
+  // ── Phase 2 metadata (nullable for back-compat with existing admin-uploaded rows) ──
+  fileName   String?
+  objectKey  String?
+  fileSize   Int?
+  mimeType   String?
+  // ──────────────────────────────────────────────────────────────────────────────
 
   applicant   Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
 
@@ -942,6 +1042,60 @@ model ApplicantReference {
   @@index([token])
   @@index([status])
 }
+
+// ─── PUBLIC APPLICATION FORM (Phase 2) ────────────────────────────────────────
+// Resumable draft state for the unauthenticated /apply form. On submit, a row
+// in Applicant is created and `draftId` set on it (one-to-one). The draft row
+// itself sticks around (so the applicant can re-fetch the same code after
+// submission for status checks).
+
+model ApplicantDraft {
+  id               String     @id @default(cuid())
+  code             String     @unique  // shown to applicant; "HMC-DRAFT-XXXXXX"
+  email            String                // case-insensitive identifier for resume
+  phone            String?
+  studentType      String                // lowercase 'domestic' | 'international' as captured
+  programmeCode    String?
+  currentStep      Int        @default(1)
+  formData         Json                  // full form state; includes documents map
+  expiresAt        DateTime              // bumped on every PUT (30d window)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  // Back-relation. The FK lives on Applicant.draftId — one draft → at most one applicant.
+  applicant        Applicant?
+
+  @@index([code])
+  @@index([email])
+  @@index([expiresAt])
+}
+
+model ApplicantEducation {
+  id                String    @id @default(cuid())
+  applicantId       String
+  qualification     String    // e.g. "10th/SSC" | "+2/12th" | "Graduation" | custom
+  boardOrUniversity String
+  yearOfCompletion  Int?
+  sortOrder         Int       @default(0)
+
+  applicant         Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  @@index([applicantId])
+}
+
+model ApplicantLanguage {
+  id          String    @id @default(cuid())
+  applicantId String
+  language    String
+  canSpeak    Boolean   @default(false)
+  canRead     Boolean   @default(false)
+  canWrite    Boolean   @default(false)
+
+  applicant   Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  @@index([applicantId])
+}
+// ──────────────────────────────────────────────────────────────────────────────
 
 model ReferralProgramme {
   id                    String              @id @default(uuid())

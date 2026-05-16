@@ -1,19 +1,160 @@
 // server/src/routes/public.js
 // Unauthenticated read-only endpoints for the public marketing surface
-// (Apply page, etc.). Mount BEFORE any router that applies `authenticate`.
+// (Apply page, etc.) and the public application form (Phase 2).
+// Mount BEFORE any router that applies `authenticate`.
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
+const multer = require('multer');
+const geoip = require('geoip-lite');
+const { Prisma } = require('@prisma/client');
 const prisma = require('../config/db');
+const minioService = require('../services/minio.service');
+const { nowInIST } = require('../utils/dateUtils');
 
-// GET /api/public/programmes?type=domestic|international
-//
-// Shape the response for the public /apply page:
-// - returns id, code, name, durationYears, totalCost, applicationFee, medium, modes
-// - international: hide CTH entirely and serve online-only mode list (international
-//   students never do offline)
-// - domestic: all active programmes, modes intact
-// - null totalCost/applicationFee passed through as null so the FE can render
-//   "TBD — contact admissions" rather than crash
+// In-memory multer; per-route file caps applied in the handler. The outer
+// limit here is a coarse safety net (12 MB) since per-doctype rules diverge.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+});
+
+// Tighter limiter for the destructive endpoints (start + submit) — 10/hour/IP.
+// The broader /api/public 60/min limiter from app.js still applies on top.
+const writeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many submissions from this address — please try again in an hour.' },
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DRAFT_CODE_RE = /^HMC-DRAFT-[A-Z0-9]{6}$/;
+
+function isEmail(s) {
+  return typeof s === 'string' && EMAIL_RE.test(s.trim()) && s.trim().length <= 254;
+}
+function normEmail(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+// "HMC-DRAFT-XXXXXX" with 6 uppercase alphanumeric chars from a 32-char alphabet
+// (no I/O/0/1 to avoid confusion when admissions reads it back over phone).
+const CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+function generateDraftCode() {
+  const bytes = crypto.randomBytes(6);
+  let out = '';
+  for (let i = 0; i < 6; i++) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  return `HMC-DRAFT-${out}`;
+}
+
+// Whitelisted formData keys. Anything else from req.body.formData is dropped —
+// no `__proto__` / arbitrary keys make it into JSONB. Two specials:
+//   - `documents` is the per-docType uploaded-file map managed by /documents handlers
+//   - `educationEntries`/`languages` are arrays moved into their own tables on submit
+const FORM_KEYS = new Set([
+  // Personal
+  'firstName', 'lastName', 'email', 'phone',
+  'gender', 'dateOfBirth', 'placeOfBirth', 'nationality',
+  'maritalStatus', 'spouseName', 'childrenInfo', 'motherTongue',
+  // 'OFFLINE' | 'ONLINE'. Domestic-only in the form (international is implicit
+  // ONLINE and set server-side at submit).
+  'studyMode',
+  // Addresses
+  'presentAddressLine', 'presentAddressState', 'presentAddressCountry', 'presentAddressPin',
+  'permanentAddressLine', 'permanentAddressState', 'permanentAddressCountry', 'permanentAddressPin',
+  // Contact
+  'mobile', 'whatsapp', 'emergencyContact',
+  // International-only
+  'passportNumber', 'passportCountryOfIssue', 'countryOfResidence', 'cityOfResidence',
+  'currentVisaStatus', 'intendedIndianVisa', 'indiaEmergencyContact',
+  // Background
+  'substanceHistory', 'criminalHistory', 'influenceForApplying',
+  // Education
+  'technicalQualification', 'theologicalQualification',
+  'currentlyEmployed', 'workExperience',
+  'educationEntries', 'languages',
+  // Spiritual
+  'receivedChrist', 'receivedChristWhen',
+  'waterBaptism', 'waterBaptismWhen',
+  'salvationTestimony',
+  'churchDenomination', 'churchName', 'churchAddress',
+  'pastorName', 'pastorAddress',
+  'holySpiritInfilling', 'callForMinistry',
+  // Financial
+  'sponsoredByOrg', 'paymentMethod', 'commitTwoHoursDaily', 'feeResponsibility',
+  'sponsorName', 'sponsorDetails', 'sponsorContact', 'sponsorEmail',
+  'needsFinancialAid', 'financialAidNote',
+  // Health
+  'healthResponses',
+  // Declarations
+  'studentDeclarationAgreed', 'parentDeclarationAgreed',
+  'commitmentStatementAgreed', 'feeDeclarationAgreed',
+  'feeDeclarationSponsorName', 'feeDeclarationSponsorContact', 'feeDeclarationSponsorEmail',
+  // Documents map — managed by /documents handlers, but allowed through PUT
+  // so the FE can clear or reorder if needed.
+  'documents',
+]);
+
+function pickForm(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const k of FORM_KEYS) if (raw[k] !== undefined) out[k] = raw[k];
+  return out;
+}
+
+const DOC_TYPES = new Set(['PHOTO', 'TRANSCRIPT', 'MARKSHEET', 'REFERENCE_PASTORAL', 'REFERENCE_LEADER', 'PASSPORT_COPY']);
+
+// Per-docType file caps. PHOTO is a strict 5MB JPEG/PNG only. Everything else
+// is 10MB image/* or PDF. (Multer's outer cap is 12MB; the per-doctype rules
+// override below.)
+const DOC_RULES = {
+  PHOTO:              { maxBytes: 5 * 1024 * 1024,  allowed: ['image/jpeg', 'image/png'] },
+  TRANSCRIPT:         { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
+  MARKSHEET:          { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
+  REFERENCE_PASTORAL: { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
+  REFERENCE_LEADER:   { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
+  PASSPORT_COPY:      { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
+};
+
+// Day windows for the draft TTL. Bumped on every PUT.
+const DRAFT_TTL_DAYS = 30;
+function draftExpiresAt(from = new Date()) {
+  return new Date(from.getTime() + DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+// Centralized loader: look up by code, enforce email match, refuse if expired
+// or already submitted. Returns { draft } on success or { error, status } on
+// failure — callers translate to res.status().json().
+async function loadDraftForAccess(code, emailFromCaller) {
+  if (!code || !DRAFT_CODE_RE.test(code)) {
+    return { error: 'Invalid draft code', status: 404 };
+  }
+  if (!isEmail(emailFromCaller)) {
+    return { error: 'email is required for draft access', status: 400 };
+  }
+  const draft = await prisma.applicantDraft.findUnique({
+    where: { code },
+    include: { applicant: { select: { id: true } } },
+  });
+  if (!draft) return { error: 'Draft not found', status: 404 };
+  if (draft.expiresAt < new Date()) return { error: 'Draft has expired', status: 404 };
+  if (draft.applicant) return { error: 'Draft has already been submitted', status: 404 };
+  if (normEmail(draft.email) !== normEmail(emailFromCaller)) {
+    return { error: 'Email does not match this draft', status: 403 };
+  }
+  return { draft };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /api/public/programmes?type=domestic|international  (existing — Phase 1)
+// ──────────────────────────────────────────────────────────────────────────────
 router.get('/programmes', async (req, res, next) => {
   try {
     const type = String(req.query.type || 'domestic').toLowerCase() === 'international'
@@ -21,9 +162,7 @@ router.get('/programmes', async (req, res, next) => {
       : 'domestic';
 
     const where = { status: 'active' };
-    if (type === 'international') {
-      where.code = { not: 'CTH' };
-    }
+    if (type === 'international') where.code = { not: 'CTH' };
 
     const rows = await prisma.programme.findMany({
       where,
@@ -44,28 +183,18 @@ router.get('/programmes', async (req, res, next) => {
     });
 
     const programmes = rows.map(p => {
-      // Convert Decimal → plain string so the response carries exact precision
-      // without leaking Prisma internals to the public payload.
       const cost = type === 'international' ? p.totalCostInternational : p.totalCostDomestic;
-      const fee = type === 'international' ? p.applicationFeeInternational : p.applicationFeeDomestic;
-
-      // Modes: international gets online-only (campus is in India). Domestic
-      // gets whatever the programme is configured for.
+      const fee  = type === 'international' ? p.applicationFeeInternational : p.applicationFeeDomestic;
       const modes = [];
       if (type === 'international') {
         if (p.availableOnline) modes.push('online');
       } else {
         if (p.availableOffline) modes.push('offline');
-        if (p.availableOnline) modes.push('online');
+        if (p.availableOnline)  modes.push('online');
       }
-
       return {
-        id: p.id,
-        code: p.code,
-        name: p.name,
-        durationYears: p.durationYears,
-        medium: p.medium,
-        modes,
+        id: p.id, code: p.code, name: p.name,
+        durationYears: p.durationYears, medium: p.medium, modes,
         totalCost: cost != null ? cost.toString() : null,
         applicationFee: fee != null ? fee.toString() : null,
         currency: type === 'international' ? 'USD' : 'INR',
@@ -73,6 +202,658 @@ router.get('/programmes', async (req, res, next) => {
     });
 
     res.json({ type, programmes });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /api/public/geo
+// Returns { country, applicantType } based on the caller's IP via geoip-lite.
+// nginx provides X-Forwarded-For; app.js has `trust proxy` set so req.ip
+// already resolves to the client IP. On any lookup failure we default to
+// INTERNATIONAL — the international form has fewer assumptions and a
+// hard-to-pay domestic applicant is a worse failure mode than the reverse.
+// ──────────────────────────────────────────────────────────────────────────────
+router.get('/geo', (req, res) => {
+  try {
+    const ip = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim();
+    if (!ip) return res.json({ country: null, applicantType: 'INTERNATIONAL' });
+    const lookup = geoip.lookup(ip);
+    if (!lookup || !lookup.country) {
+      return res.json({ country: null, applicantType: 'INTERNATIONAL' });
+    }
+    res.json({
+      country: lookup.country,
+      applicantType: lookup.country === 'IN' ? 'DOMESTIC' : 'INTERNATIONAL',
+    });
+  } catch (_e) {
+    res.json({ country: null, applicantType: 'INTERNATIONAL' });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /api/public/applications/start  — 10/hr/IP
+// Body: { email, phone?, studentType, programmeCode? }
+// Returns: { code, expiresAt }
+// ──────────────────────────────────────────────────────────────────────────────
+router.post('/applications/start', writeLimiter, async (req, res, next) => {
+  try {
+    const { email, phone, studentType, programmeCode } = req.body || {};
+    if (!isEmail(email)) return res.status(400).json({ error: 'A valid email is required' });
+    const st = String(studentType || '').toLowerCase();
+    if (st !== 'domestic' && st !== 'international') {
+      return res.status(400).json({ error: 'studentType must be "domestic" or "international"' });
+    }
+    if (phone !== undefined && phone !== null && phone !== '' && typeof phone !== 'string') {
+      return res.status(400).json({ error: 'phone must be a string' });
+    }
+    if (programmeCode !== undefined && programmeCode !== null && programmeCode !== '' && typeof programmeCode !== 'string') {
+      return res.status(400).json({ error: 'programmeCode must be a string' });
+    }
+    // If programmeCode is provided, verify it exists and is allowed for this
+    // student type (mirrors the public /programmes endpoint).
+    let pCode = null;
+    if (programmeCode) {
+      const code = String(programmeCode).trim().toUpperCase();
+      const prog = await prisma.programme.findUnique({ where: { code }, select: { code: true, status: true } });
+      if (!prog || prog.status !== 'active') return res.status(400).json({ error: 'Unknown programme code' });
+      if (st === 'international' && code === 'CTH') {
+        return res.status(400).json({ error: 'CTH is not available for international applicants' });
+      }
+      pCode = code;
+    }
+
+    const expiresAt = draftExpiresAt();
+    // Retry on @unique collision for the generated code. With 32^6 ≈ 10^9 keys
+    // collisions are astronomically rare but the retry keeps the API honest.
+    let created = null, lastErr;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const code = generateDraftCode();
+      try {
+        created = await prisma.applicantDraft.create({
+          data: {
+            code,
+            email: normEmail(email),
+            phone: phone ? String(phone).trim() : null,
+            studentType: st,
+            programmeCode: pCode,
+            currentStep: 1,
+            formData: {},
+            expiresAt,
+          },
+          select: { code: true, expiresAt: true },
+        });
+        break;
+      } catch (e) {
+        if (e?.code === 'P2002') { lastErr = e; continue; }
+        throw e;
+      }
+    }
+    if (!created) throw lastErr || new Error('Could not allocate draft code');
+
+    res.status(201).json(created);
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /api/public/applications/draft/:code?email=...
+// ──────────────────────────────────────────────────────────────────────────────
+router.get('/applications/draft/:code', async (req, res, next) => {
+  try {
+    const { draft, error, status } = await loadDraftForAccess(req.params.code, req.query.email);
+    if (error) return res.status(status).json({ error });
+    res.json({
+      code: draft.code,
+      email: draft.email,
+      phone: draft.phone,
+      studentType: draft.studentType,
+      programmeCode: draft.programmeCode,
+      currentStep: draft.currentStep,
+      formData: draft.formData,
+      expiresAt: draft.expiresAt,
+      updatedAt: draft.updatedAt,
+    });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PUT /api/public/applications/draft/:code
+// Body: { email, formData, currentStep, programmeCode?, studentType? }
+// ──────────────────────────────────────────────────────────────────────────────
+router.put('/applications/draft/:code', async (req, res, next) => {
+  try {
+    const { email, formData, currentStep, programmeCode, studentType } = req.body || {};
+    const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
+    if (error) return res.status(status).json({ error });
+
+    const data = { expiresAt: draftExpiresAt() }; // bump TTL on every save
+    if (formData !== undefined) {
+      if (formData === null || typeof formData !== 'object' || Array.isArray(formData)) {
+        return res.status(400).json({ error: 'formData must be an object' });
+      }
+      // Preserve any documents map already stored — the FE shouldn't be writing
+      // through it, but if it does, ensure we don't drop uploaded references.
+      const incoming = pickForm(formData);
+      const preserved = (draft.formData && draft.formData.documents) ? draft.formData.documents : undefined;
+      data.formData = { ...incoming, ...(preserved !== undefined && incoming.documents === undefined ? { documents: preserved } : {}) };
+    }
+    if (currentStep !== undefined) {
+      const n = parseInt(currentStep, 10);
+      if (!Number.isInteger(n) || n < 1 || n > 10) {
+        return res.status(400).json({ error: 'currentStep must be an integer 1..10' });
+      }
+      data.currentStep = n;
+    }
+    if (programmeCode !== undefined) {
+      if (programmeCode === null || programmeCode === '') {
+        data.programmeCode = null;
+      } else {
+        const code = String(programmeCode).trim().toUpperCase();
+        const prog = await prisma.programme.findUnique({ where: { code }, select: { code: true, status: true } });
+        if (!prog || prog.status !== 'active') return res.status(400).json({ error: 'Unknown programme code' });
+        if (draft.studentType === 'international' && code === 'CTH') {
+          return res.status(400).json({ error: 'CTH is not available for international applicants' });
+        }
+        data.programmeCode = code;
+      }
+    }
+    if (studentType !== undefined) {
+      const st = String(studentType).toLowerCase();
+      if (st !== 'domestic' && st !== 'international') {
+        return res.status(400).json({ error: 'studentType must be "domestic" or "international"' });
+      }
+      data.studentType = st;
+    }
+
+    const updated = await prisma.applicantDraft.update({
+      where: { id: draft.id },
+      data,
+      select: { updatedAt: true, expiresAt: true, currentStep: true },
+    });
+    res.json({ success: true, ...updated });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /api/public/applications/draft/:code/documents  (multipart)
+// fields:  email, docType
+// file:    file
+// ──────────────────────────────────────────────────────────────────────────────
+router.post('/applications/draft/:code/documents', upload.single('file'), async (req, res, next) => {
+  try {
+    const { email, docType } = req.body || {};
+    const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
+    if (error) return res.status(status).json({ error });
+
+    const dt = String(docType || '').toUpperCase();
+    if (!DOC_TYPES.has(dt)) {
+      return res.status(400).json({ error: `docType must be one of: ${[...DOC_TYPES].join(', ')}` });
+    }
+    if (!req.file) return res.status(400).json({ error: 'No file provided' });
+
+    const rule = DOC_RULES[dt];
+    if (req.file.size > rule.maxBytes) {
+      return res.status(400).json({ error: `File exceeds ${Math.round(rule.maxBytes / (1024 * 1024))}MB cap for ${dt}` });
+    }
+    const mime = String(req.file.mimetype || '').toLowerCase().split(';')[0].trim();
+    if (!rule.allowed.includes(mime)) {
+      return res.status(400).json({ error: `${dt} accepts: ${rule.allowed.join(', ')}` });
+    }
+
+    // Safe object path: applicants/{code}/{docType}/{ts}-{sanitized-name}.
+    // sanitizeObjectPath inside minio.service will strip anything dodgy from
+    // the filename component; we still pre-sanitize so the timestamp prefix
+    // survives intact.
+    const ts = Date.now();
+    const rawName = String(req.file.originalname || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(-80);
+    const objectPath = `applicants/${draft.code}/${dt}/${ts}-${rawName}`;
+
+    // If a previous upload exists for this docType, delete it from MinIO before
+    // overwriting the formData slot — keeps the bucket from accumulating orphans.
+    const docs = (draft.formData && draft.formData.documents) || {};
+    const previous = docs[dt];
+    if (previous && previous.objectKey) {
+      try { await minioService.deleteFile(previous.objectKey); } catch (_e) { /* best effort */ }
+    }
+
+    const storedKey = await minioService.uploadFile(
+      req.file.buffer,
+      process.env.MINIO_BUCKET || 'hmc-files',
+      objectPath,
+      mime,
+    );
+
+    const slot = {
+      docType: dt,
+      objectKey: storedKey,
+      fileName: req.file.originalname || rawName,
+      fileSize: req.file.size,
+      mimeType: mime,
+      uploadedAt: new Date().toISOString(),
+    };
+    const nextDocs = { ...docs, [dt]: slot };
+    await prisma.applicantDraft.update({
+      where: { id: draft.id },
+      data: {
+        expiresAt: draftExpiresAt(),
+        formData: { ...(draft.formData || {}), documents: nextDocs },
+      },
+    });
+
+    res.status(201).json({ document: slot });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DELETE /api/public/applications/draft/:code/documents/:docType
+// Body: { email }
+// ──────────────────────────────────────────────────────────────────────────────
+router.delete('/applications/draft/:code/documents/:docType', async (req, res, next) => {
+  try {
+    const { email } = req.body || {};
+    const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
+    if (error) return res.status(status).json({ error });
+    const dt = String(req.params.docType || '').toUpperCase();
+    if (!DOC_TYPES.has(dt)) {
+      return res.status(400).json({ error: `docType must be one of: ${[...DOC_TYPES].join(', ')}` });
+    }
+    const docs = (draft.formData && draft.formData.documents) || {};
+    const slot = docs[dt];
+    if (!slot) return res.status(404).json({ error: 'No document of that type on this draft' });
+
+    if (slot.objectKey) {
+      try { await minioService.deleteFile(slot.objectKey); } catch (_e) { /* best effort */ }
+    }
+    const nextDocs = { ...docs };
+    delete nextDocs[dt];
+    await prisma.applicantDraft.update({
+      where: { id: draft.id },
+      data: {
+        expiresAt: draftExpiresAt(),
+        formData: { ...(draft.formData || {}), documents: nextDocs },
+      },
+    });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Submission validation
+// ──────────────────────────────────────────────────────────────────────────────
+
+function nonEmptyString(v) {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+function isBoolAnswered(v) {
+  return v === true || v === false;
+}
+
+function validateSubmission(draft, fd) {
+  const errors = [];
+
+  // Universal — always required for either type
+  if (!nonEmptyString(fd.firstName)) errors.push('firstName is required');
+  if (!nonEmptyString(fd.lastName))  errors.push('lastName is required');
+  if (!isEmail(fd.email))            errors.push('email must be a valid address');
+  if (!nonEmptyString(fd.gender))    errors.push('gender is required');
+  if (!nonEmptyString(fd.dateOfBirth) && !(fd.dateOfBirth instanceof Date)) errors.push('dateOfBirth is required');
+  if (!nonEmptyString(fd.nationality)) errors.push('nationality is required');
+  if (!nonEmptyString(fd.maritalStatus)) errors.push('maritalStatus is required');
+  if (!nonEmptyString(fd.mobile))    errors.push('mobile is required');
+  if (!nonEmptyString(fd.presentAddressLine)) errors.push('presentAddressLine is required');
+  if (!nonEmptyString(fd.presentAddressState)) errors.push('presentAddressState is required');
+  if (!nonEmptyString(fd.presentAddressCountry)) errors.push('presentAddressCountry is required');
+  if (!nonEmptyString(fd.emergencyContact)) errors.push('emergencyContact is required');
+  if (!isBoolAnswered(fd.receivedChrist)) errors.push('receivedChrist must be answered');
+  if (!isBoolAnswered(fd.waterBaptism))   errors.push('waterBaptism must be answered');
+  if (!nonEmptyString(fd.churchName))    errors.push('churchName is required');
+  if (!nonEmptyString(fd.pastorName))    errors.push('pastorName is required');
+  if (fd.studentDeclarationAgreed   !== true) errors.push('studentDeclarationAgreed must be true');
+  if (fd.commitmentStatementAgreed  !== true) errors.push('commitmentStatementAgreed must be true');
+  if (fd.feeDeclarationAgreed       !== true) errors.push('feeDeclarationAgreed must be true');
+  if (!nonEmptyString(draft.programmeCode)) errors.push('programmeCode is required');
+
+  // Conditional — by studentType
+  if (draft.studentType === 'domestic') {
+    // Domestic applicants pick OFFLINE (on-campus) vs ONLINE explicitly.
+    // Work scholarship is OFFLINE-only — online students aren't on campus to
+    // do the two-hour daily commitment.
+    const sm = String(fd.studyMode || '').toUpperCase();
+    if (sm !== 'OFFLINE' && sm !== 'ONLINE') {
+      errors.push('studyMode must be "OFFLINE" or "ONLINE" for domestic applicants');
+    }
+    const pm = String(fd.paymentMethod || '');
+    if (sm === 'OFFLINE') {
+      if (pm !== 'fees' && pm !== 'workScholarship') {
+        errors.push('paymentMethod must be "fees" or "workScholarship" for domestic-offline');
+      }
+      if (pm === 'workScholarship' && fd.commitTwoHoursDaily !== true) {
+        errors.push('commitTwoHoursDaily must be true when workScholarship is selected');
+      }
+    } else if (sm === 'ONLINE') {
+      // No campus → no workScholarship option. commitTwoHoursDaily is ignored.
+      if (pm !== 'fees') {
+        errors.push('paymentMethod must be "fees" for domestic-online (workScholarship is offline-only)');
+      }
+    }
+    if (!nonEmptyString(fd.feeResponsibility)) errors.push('feeResponsibility is required for domestic applicants');
+  } else if (draft.studentType === 'international') {
+    if (!isBoolAnswered(fd.needsFinancialAid)) errors.push('needsFinancialAid must be answered');
+    if (String(fd.paymentMethod || '') !== 'fees') {
+      errors.push('paymentMethod must be "fees" for international applicants (workScholarship not allowed)');
+    }
+    if (!nonEmptyString(fd.passportNumber))         errors.push('passportNumber is required for international applicants');
+    if (!nonEmptyString(fd.passportCountryOfIssue)) errors.push('passportCountryOfIssue is required for international applicants');
+    if (!nonEmptyString(fd.countryOfResidence))     errors.push('countryOfResidence is required for international applicants');
+    if (!nonEmptyString(fd.cityOfResidence))        errors.push('cityOfResidence is required for international applicants');
+    if (!nonEmptyString(fd.currentVisaStatus))      errors.push('currentVisaStatus is required for international applicants');
+    if (!nonEmptyString(fd.intendedIndianVisa))     errors.push('intendedIndianVisa is required for international applicants');
+    if (!nonEmptyString(fd.indiaEmergencyContact))  errors.push('indiaEmergencyContact is required for international applicants');
+  } else {
+    errors.push('studentType on draft is invalid');
+  }
+
+  return errors;
+}
+
+// Map a possibly-string date-only to a Date for an `@db.Date` column. Returns
+// null on missing/invalid.
+function toDateOrNull(v) {
+  if (!v) return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /api/public/applications/draft/:code/submit  — 10/hr/IP
+// Body: { email }
+// Returns: { applicationNo, applicantId }
+// ──────────────────────────────────────────────────────────────────────────────
+router.post('/applications/draft/:code/submit', writeLimiter, async (req, res, next) => {
+  try {
+    const { email } = req.body || {};
+    const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
+    if (error) return res.status(status).json({ error });
+
+    const fd = (draft.formData && typeof draft.formData === 'object') ? draft.formData : {};
+    const errors = validateSubmission(draft, fd);
+    if (errors.length) return res.status(400).json({ error: 'Application is incomplete', details: errors });
+
+    // Map draft studentType (lowercase) → existing StudentType enum (UPPERCASE).
+    // Anything else was already rejected by validateSubmission above.
+    const studentTypeEnum = draft.studentType === 'international' ? 'INTERNATIONAL' : 'DOMESTIC';
+    // studyMode: domestic applicants picked one explicitly (validated). International
+    // applicants don't see the field and are always ONLINE — set server-side here.
+    const studyModeFinal = studentTypeEnum === 'INTERNATIONAL' ? 'ONLINE' : String(fd.studyMode).toUpperCase();
+
+    // Resolve programme by code (validation ensured programmeCode is set).
+    const programme = await prisma.programme.findUnique({
+      where: { code: draft.programmeCode },
+      select: { id: true, code: true, name: true, status: true },
+    });
+    if (!programme || programme.status !== 'active') {
+      return res.status(400).json({ error: 'Programme is no longer available' });
+    }
+
+    // formData snapshot for back-compat with the existing flatten() readers in
+    // admissions.js — Pipeline.jsx reads firstName/lastName/email/etc. through
+    // that path. We also persist each field into its own column on Applicant.
+    const flattenSnapshot = {
+      firstName: fd.firstName || '',
+      lastName: fd.lastName || '',
+      email: fd.email || '',
+      phone: fd.mobile || fd.phone || '',
+      dob: typeof fd.dateOfBirth === 'string' ? fd.dateOfBirth : (fd.dateOfBirth || null),
+      gender: fd.gender || '',
+      nationality: fd.nationality || '',
+      maritalStatus: fd.maritalStatus || '',
+      // Use the server-resolved studyMode so the flatten snapshot agrees with
+      // the Applicant.studyMode column (international is hardcoded ONLINE).
+      studyMode: studyModeFinal,
+      permanentAddress: [fd.permanentAddressLine, fd.permanentAddressState, fd.permanentAddressCountry, fd.permanentAddressPin]
+        .filter(Boolean).join(', '),
+      presentAddress: [fd.presentAddressLine, fd.presentAddressState, fd.presentAddressCountry, fd.presentAddressPin]
+        .filter(Boolean).join(', '),
+      statementOfFaith: fd.salvationTestimony || '',
+      academicBackground: fd.theologicalQualification || fd.technicalQualification || null,
+      // full structured snapshot preserved alongside the flatten() keys
+      _public: {
+        documents: fd.documents || {},
+        educationEntries: Array.isArray(fd.educationEntries) ? fd.educationEntries : [],
+        languages: Array.isArray(fd.languages) ? fd.languages : [],
+        healthResponses: fd.healthResponses || null,
+        // Echo every other narrative field so admissions can grep one place if needed.
+        ...Object.fromEntries(
+          Object.entries(fd).filter(([k]) => !['firstName','lastName','email','phone','dateOfBirth','gender','nationality','maritalStatus','studyMode','permanentAddressLine','permanentAddressState','permanentAddressCountry','permanentAddressPin','presentAddressLine','presentAddressState','presentAddressCountry','presentAddressPin','salvationTestimony','theologicalQualification','technicalQualification','documents','educationEntries','languages','healthResponses'].includes(k))
+        ),
+      },
+    };
+
+    // Cap formData size — defence in depth, identical convention to admissions.js POST.
+    const FORM_DATA_MAX_BYTES = 256 * 1024;
+    const sz = Buffer.byteLength(JSON.stringify(flattenSnapshot), 'utf8');
+    if (sz > FORM_DATA_MAX_BYTES) {
+      return res.status(413).json({ error: `Application JSON exceeds ${FORM_DATA_MAX_BYTES} byte limit` });
+    }
+
+    // applicationNo: HMC-APP-{istYear}-{NNNN}, matching the existing manual
+    // flow's format and retry-from-1001 pattern.
+    const istYear = nowInIST().year;
+    const baseCount = await prisma.applicant.count({ where: { intakeYear: istYear } });
+
+    // Build the individual-column data payload from formData.
+    const submittedAt = new Date();
+    const educationEntries = Array.isArray(fd.educationEntries) ? fd.educationEntries : [];
+    const languages = Array.isArray(fd.languages) ? fd.languages : [];
+    const documentsMap = (fd.documents && typeof fd.documents === 'object') ? fd.documents : {};
+
+    let applicant = null;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const appNo = `HMC-APP-${istYear}-${String(baseCount + 1001 + attempt).padStart(4, '0')}`;
+      try {
+        applicant = await prisma.$transaction(async (tx) => {
+          const created = await tx.applicant.create({
+            data: {
+              applicationNo: appNo,
+              programmeId: programme.id,
+              programmeCode: programme.code,
+              studentType: studentTypeEnum,
+              studyMode: studyModeFinal,
+              pipelineStage: 'RECEIVED',
+              status: 'active',
+              intakeYear: istYear,
+              source: 'PUBLIC_FORM',
+              submittedAt,
+              draftId: draft.id,
+              formData: flattenSnapshot,
+              // ── Individual columns mirrored from formData ─────────────────
+              // Personal
+              gender: fd.gender || null,
+              dateOfBirth: toDateOrNull(fd.dateOfBirth),
+              placeOfBirth: fd.placeOfBirth || null,
+              nationality: fd.nationality || null,
+              maritalStatus: fd.maritalStatus || null,
+              spouseName: fd.spouseName || null,
+              childrenInfo: fd.childrenInfo || null,
+              motherTongue: fd.motherTongue || null,
+              // Addresses
+              presentAddressLine:    fd.presentAddressLine || null,
+              presentAddressState:   fd.presentAddressState || null,
+              presentAddressCountry: fd.presentAddressCountry || null,
+              presentAddressPin:     fd.presentAddressPin || null,
+              permanentAddressLine:    fd.permanentAddressLine || null,
+              permanentAddressState:   fd.permanentAddressState || null,
+              permanentAddressCountry: fd.permanentAddressCountry || null,
+              permanentAddressPin:     fd.permanentAddressPin || null,
+              // Contact
+              mobile: fd.mobile || null,
+              whatsapp: fd.whatsapp || null,
+              emergencyContact: fd.emergencyContact || null,
+              // International
+              passportNumber: fd.passportNumber || null,
+              passportCountryOfIssue: fd.passportCountryOfIssue || null,
+              countryOfResidence: fd.countryOfResidence || null,
+              cityOfResidence: fd.cityOfResidence || null,
+              currentVisaStatus: fd.currentVisaStatus || null,
+              intendedIndianVisa: fd.intendedIndianVisa || null,
+              indiaEmergencyContact: fd.indiaEmergencyContact || null,
+              // Background
+              substanceHistory: fd.substanceHistory || null,
+              criminalHistory: fd.criminalHistory || null,
+              influenceForApplying: fd.influenceForApplying || null,
+              // Education narrative
+              technicalQualification: fd.technicalQualification || null,
+              theologicalQualification: fd.theologicalQualification || null,
+              currentlyEmployed: fd.currentlyEmployed || null,
+              workExperience: fd.workExperience || null,
+              // Spiritual
+              receivedChrist: typeof fd.receivedChrist === 'boolean' ? fd.receivedChrist : null,
+              receivedChristWhen: fd.receivedChristWhen || null,
+              waterBaptism: typeof fd.waterBaptism === 'boolean' ? fd.waterBaptism : null,
+              waterBaptismWhen: fd.waterBaptismWhen || null,
+              salvationTestimony: fd.salvationTestimony || null,
+              churchDenomination: fd.churchDenomination || null,
+              churchName: fd.churchName || null,
+              churchAddress: fd.churchAddress || null,
+              pastorName: fd.pastorName || null,
+              pastorAddress: fd.pastorAddress || null,
+              holySpiritInfilling: fd.holySpiritInfilling || null,
+              callForMinistry: fd.callForMinistry || null,
+              // Financial
+              sponsoredByOrg: fd.sponsoredByOrg || null,
+              paymentMethod: fd.paymentMethod || null,
+              commitTwoHoursDaily: typeof fd.commitTwoHoursDaily === 'boolean' ? fd.commitTwoHoursDaily : null,
+              feeResponsibility: fd.feeResponsibility || null,
+              sponsorName: fd.sponsorName || null,
+              sponsorDetails: fd.sponsorDetails || null,
+              sponsorContact: fd.sponsorContact || null,
+              sponsorEmail: fd.sponsorEmail || null,
+              needsFinancialAid: typeof fd.needsFinancialAid === 'boolean' ? fd.needsFinancialAid : null,
+              financialAidNote: fd.financialAidNote || null,
+              // Health responses (separate from legacy healthDeclaration)
+              healthResponses: fd.healthResponses || null,
+              // Declarations
+              studentDeclarationAgreed:   fd.studentDeclarationAgreed   === true ? true : null,
+              parentDeclarationAgreed:    fd.parentDeclarationAgreed    === true ? true : null,
+              commitmentStatementAgreed:  fd.commitmentStatementAgreed  === true ? true : null,
+              feeDeclarationAgreed:       fd.feeDeclarationAgreed       === true ? true : null,
+              feeDeclarationSponsorName:    fd.feeDeclarationSponsorName    || null,
+              feeDeclarationSponsorContact: fd.feeDeclarationSponsorContact || null,
+              feeDeclarationSponsorEmail:   fd.feeDeclarationSponsorEmail   || null,
+            },
+          });
+
+          // Education rows
+          if (educationEntries.length > 0) {
+            await tx.applicantEducation.createMany({
+              data: educationEntries
+                .filter(e => e && (nonEmptyString(e.qualification) || nonEmptyString(e.boardOrUniversity)))
+                .map((e, i) => ({
+                  applicantId: created.id,
+                  qualification: String(e.qualification || '').slice(0, 200),
+                  boardOrUniversity: String(e.boardOrUniversity || '').slice(0, 300),
+                  yearOfCompletion: Number.isInteger(e.yearOfCompletion) ? e.yearOfCompletion
+                    : (e.yearOfCompletion ? parseInt(e.yearOfCompletion, 10) || null : null),
+                  sortOrder: i,
+                })),
+            });
+          }
+
+          // Language rows
+          if (languages.length > 0) {
+            await tx.applicantLanguage.createMany({
+              data: languages
+                .filter(l => l && nonEmptyString(l.language))
+                .map(l => ({
+                  applicantId: created.id,
+                  language: String(l.language).slice(0, 80),
+                  canSpeak: !!l.canSpeak,
+                  canRead:  !!l.canRead,
+                  canWrite: !!l.canWrite,
+                })),
+            });
+          }
+
+          // Document rows — for each docType slot we keep in draft.formData.
+          // Dual-write fileUrl and objectKey with the same MinIO object path so
+          // existing admin code that reads `fileUrl` keeps working.
+          const docEntries = Object.entries(documentsMap).filter(([k, v]) => DOC_TYPES.has(k) && v && v.objectKey);
+          if (docEntries.length > 0) {
+            await tx.applicantDocument.createMany({
+              data: docEntries.map(([dt, slot]) => ({
+                applicantId: created.id,
+                docType: dt,
+                fileUrl: slot.objectKey,
+                objectKey: slot.objectKey,
+                fileName: slot.fileName || null,
+                fileSize: typeof slot.fileSize === 'number' ? slot.fileSize : null,
+                mimeType: slot.mimeType || null,
+              })),
+            });
+          }
+
+          return created;
+        });
+        break;
+      } catch (e) {
+        // Only retry on applicationNo uniqueness collisions; everything else fails the whole thing.
+        if (e?.code === 'P2002' && Array.isArray(e?.meta?.target) && e.meta.target.includes('applicationNo')) {
+          lastErr = e; continue;
+        }
+        throw e;
+      }
+    }
+    if (!applicant) throw lastErr || new Error('Could not allocate application number');
+
+    res.status(201).json({
+      applicationNo: applicant.applicationNo,
+      applicantId: applicant.id,
+    });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /api/public/applications/status?applicationNo=...&email=...
+// ──────────────────────────────────────────────────────────────────────────────
+router.get('/applications/status', async (req, res, next) => {
+  try {
+    const { applicationNo, email } = req.query;
+    if (!applicationNo || typeof applicationNo !== 'string') {
+      return res.status(400).json({ error: 'applicationNo is required' });
+    }
+    if (!isEmail(email)) return res.status(400).json({ error: 'email is required' });
+
+    const a = await prisma.applicant.findUnique({
+      where: { applicationNo: String(applicationNo).trim() },
+      select: {
+        id: true,
+        applicationNo: true,
+        pipelineStage: true,
+        submittedAt: true,
+        updatedAt: true,
+        formData: true,
+        programme: { select: { name: true, code: true } },
+      },
+    });
+    // Don't differentiate "not found" vs "wrong email" — same response either
+    // way to avoid an enumeration oracle.
+    const failGeneric = () => res.status(404).json({ error: 'No application matching that number and email' });
+    if (!a) return failGeneric();
+    const storedEmail = normEmail(a.formData?.email);
+    if (!storedEmail || storedEmail !== normEmail(email)) return failGeneric();
+
+    res.json({
+      applicationNo: a.applicationNo,
+      programmeName: a.programme?.name || '',
+      programmeCode: a.programme?.code || '',
+      status: a.pipelineStage,
+      submittedAt: a.submittedAt,
+      lastUpdate: a.updatedAt,
+    });
   } catch (err) { next(err); }
 });
 
