@@ -66,6 +66,7 @@ const ReferenceForm = lazy(() => import('./pages/public/ReferenceForm'));
 const TranscriptVerify = lazy(() => import('./pages/public/TranscriptVerify'));
 const ApplyPage = lazy(() => import('./pages/public/ApplyPage'));
 const ApplyStart = lazy(() => import('./pages/public/ApplyStart'));
+const ApplyContinue = lazy(() => import('./pages/public/ApplyContinue'));
 
 const ROLE_HOME = {
   FULL_ADMIN: '/admin',
@@ -146,6 +147,7 @@ export default function App() {
           <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
           <Route path="/apply" element={<ApplyPage />} />
           <Route path="/apply/start" element={<ApplyStart />} />
+          <Route path="/apply/continue" element={<ApplyContinue />} />
 
           {/* Public — always accessible (token-based, no auth) */}
           <Route path="/references/:token" element={<ReferenceForm />} />

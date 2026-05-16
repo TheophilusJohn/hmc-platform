@@ -243,6 +243,23 @@ router.post('/applications/start', writeLimiter, async (req, res, next) => {
     if (st !== 'domestic' && st !== 'international') {
       return res.status(400).json({ error: 'studentType must be "domestic" or "international"' });
     }
+
+    // ── Geo enforcement (leadership decision) ─────────────────────────────────
+    // The FE no longer surfaces a domestic/international toggle — geo is the
+    // single source of truth for the applicant type, both on the landing page
+    // and at the start endpoint. A curl request claiming `studentType:domestic`
+    // from a US IP must be refused, otherwise the boundary the FE removed is
+    // still bypassable by anyone who reads the network tab.
+    //
+    // Misclassified applicants (VPN users, travelling Indians, NRI parents,
+    // etc.) contact admissions@hmc.college — admissions handles those manually.
+    const lookup = (() => { try { return geoip.lookup(req.ip); } catch (_e) { return null; } })();
+    const serverGeoType = lookup?.country === 'IN' ? 'domestic' : 'international';
+    if (st !== serverGeoType) {
+      return res.status(400).json({
+        error: 'Application type does not match your detected location. If you believe this is incorrect, please contact admissions@hmc.college.',
+      });
+    }
     if (phone !== undefined && phone !== null && phone !== '' && typeof phone !== 'string') {
       return res.status(400).json({ error: 'phone must be a string' });
     }
