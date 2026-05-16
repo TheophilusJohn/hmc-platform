@@ -177,6 +177,23 @@ function StepIntro({ applicantType, programmeCode, onStarted }) {
         ...(programmeCode ? { programmeCode } : {}),
       };
       const { data } = await api.post('/public/applications/start', body);
+
+      // Seed the server's formData with email + mobile BEFORE the parent's
+      // hydration useEffect fires. Otherwise that effect's GET /draft sees an
+      // empty server-side formData and wipes the local seed the parent just
+      // set in handleStarted — Step 2 would then load with an empty mobile.
+      // Best-effort: if this PUT fails the start still succeeded and the
+      // applicant just re-enters mobile on Step 2. We avoid surfacing the
+      // error so the user isn't tempted to re-click Start and create a
+      // duplicate draft.
+      try {
+        await api.put(`/public/applications/draft/${encodeURIComponent(data.code)}`, {
+          email: body.email,
+          formData: { email: body.email, mobile: body.phone },
+          currentStep: 1,
+        });
+      } catch (_e) { /* best-effort — see comment above */ }
+
       onStarted({ code: data.code, email: body.email, mobile: body.phone });
     } catch (err) {
       setSubmitError(err?.response?.data?.error || 'Could not start your application. Please try again.');
