@@ -414,6 +414,11 @@ model Programme {
   availableOffline Boolean        @default(true)
   availableOnline  Boolean        @default(true)
   status          String          @default("active")
+  // Tuition + application fee, per student type. Null = "TBD" on public /apply.
+  totalCostDomestic           Decimal? @db.Decimal(10, 2)
+  totalCostInternational      Decimal? @db.Decimal(10, 2)
+  applicationFeeDomestic      Decimal? @db.Decimal(10, 2)
+  applicationFeeInternational Decimal? @db.Decimal(10, 2)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 

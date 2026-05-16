@@ -1,9 +1,21 @@
 // server/src/routes/programmes.js
 const express = require('express');
 const router = express.Router();
+const { Prisma } = require('@prisma/client');
 const prisma = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly, adminOrTA } = require('../middleware/rbac');
+
+// Coerce a money input to Prisma.Decimal. `null`/`''`/`undefined` → null (so
+// admin can clear a value). Anything non-finite is rejected with a thrown 400.
+function moneyOrNull(raw, field) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const dec = new Prisma.Decimal(String(raw));
+  if (!dec.isFinite() || dec.lt(0)) {
+    throw Object.assign(new Error(`${field} must be a non-negative number`), { status: 400 });
+  }
+  return dec;
+}
 
 // Helper: safe int parse
 const toInt = (v, fallback = undefined) => {
@@ -187,18 +199,23 @@ router.post('/batches/:id/progression', authenticate, adminOrTA, async (req, res
 
 router.put('/:id', authenticate, adminOnly, async (req, res, next) => {
   try {
-    // Whitelist only fields that exist on the canonical Programme model:
-    // name, code, durationYears, medium, availableOffline, availableOnline,
-    // status. Pre-fix listed totalSemesters/feeINR/feeUSD/description/isActive
-    // — none of those are columns on Programme, so updates silently failed.
+    // Whitelist only fields that exist on the canonical Programme model.
     const data = {};
     for (const k of ['name', 'code', 'durationYears', 'medium', 'availableOffline', 'availableOnline', 'status']) {
       if (req.body[k] !== undefined) data[k] = req.body[k];
     }
     if (data.durationYears !== undefined) data.durationYears = parseInt(data.durationYears, 10);
+    // Money columns — admin can set or clear (null) any of the four cost fields.
+    for (const k of ['totalCostDomestic', 'totalCostInternational', 'applicationFeeDomestic', 'applicationFeeInternational']) {
+      if (req.body[k] !== undefined) data[k] = moneyOrNull(req.body[k], k);
+    }
     const programme = await prisma.programme.update({ where: { id: req.params.id }, data });
     res.json({ programme });
-  } catch (err) { console.error('programme update:', err); next(err); }
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error('programme update:', err);
+    next(err);
+  }
 });
 
 

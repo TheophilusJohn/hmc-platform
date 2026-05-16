@@ -49,6 +49,7 @@ const userExtraRoutes = require('./routes/userExtras');
 const feeTypeRoutes = require('./routes/feeTypes');
 const semesterExtraRoutes = require('./routes/semesterExtras');
 const reportExtraRoutes = require('./routes/reportExtras');
+const publicRoutes = require('./routes/public');
 
 function createApp() {
   const app = express();
@@ -95,6 +96,17 @@ app.set('trust proxy', 1);
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/forgot-password', authLimiter);
 
+  // Tighter limiter on the unauthenticated marketing endpoints — 60 req/min per IP.
+  // Sits inside the broader /api 300/15min cap.
+  const publicLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again in a moment.' },
+  });
+  app.use('/api/public', publicLimiter);
+
   // Request logging
   app.use((req, _res, next) => {
     logger.debug(`${req.method} ${req.path}`);
@@ -109,6 +121,7 @@ app.set('trust proxy', 1);
   app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
   // Public routes (no auth required)
+  app.use('/api/public', publicRoutes); // marketing surface — /apply page
   app.use('/api/auth', authRoutes);
   app.use('/api/references', referenceRoutes); // referee submission is public
   // GET /api/transcripts/verify/:uuid is reachable through the main /api/transcripts mount below.

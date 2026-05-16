@@ -3,7 +3,33 @@ import { PageWrapper, Card, Btn, Badge, Modal, Input, Select } from '../../compo
 import { useApi } from '../../hooks/useApi';
 import api from '../../utils/api';
 
-const EMPTY_PROG = { name: '', code: '', durationYears: 1, medium: 'ENGLISH', availableOffline: true, availableOnline: true, status: 'active' };
+const EMPTY_PROG = {
+  name: '', code: '', durationYears: 1, medium: 'ENGLISH',
+  availableOffline: true, availableOnline: true, status: 'active',
+  totalCostDomestic: '', totalCostInternational: '',
+  applicationFeeDomestic: '', applicationFeeInternational: '',
+};
+
+// Costs section used by both the Create and Edit programme modals.
+// Decimal columns on the server; the inputs carry strings to preserve precision
+// across the JSON boundary (no Number coercion in the FE).
+function CostsSection({ form, setForm }) {
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  return (
+    <div style={{ borderTop: '1px solid #DDE1E7', paddingTop: 14, marginTop: 4 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 14, color: '#0F2B4A', marginBottom: 4 }}>Costs</div>
+      <div style={{ fontSize: 12, color: '#7B8494', marginBottom: 10 }}>
+        Leave a field blank to show "TBD — contact admissions" on the public Apply page.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Input label="Total cost (domestic)" icon="₹" type="number" min="0" value={form.totalCostDomestic ?? ''} onChange={set('totalCostDomestic')} placeholder="e.g. 90000" />
+        <Input label="Total cost (international)" icon="$" type="number" min="0" value={form.totalCostInternational ?? ''} onChange={set('totalCostInternational')} placeholder="e.g. 4500" />
+        <Input label="Application fee (domestic)" icon="₹" type="number" min="0" value={form.applicationFeeDomestic ?? ''} onChange={set('applicationFeeDomestic')} placeholder="e.g. 500" />
+        <Input label="Application fee (international)" icon="$" type="number" min="0" value={form.applicationFeeInternational ?? ''} onChange={set('applicationFeeInternational')} placeholder="e.g. 50" />
+      </div>
+    </div>
+  );
+}
 const EMPTY_BATCH = { name: '', startYear: new Date().getFullYear(), endYear: '', currentYear: 1, maxIntake: 30, status: 'ACTIVE' };
 
 export default function Programmes() {
@@ -37,7 +63,7 @@ export default function Programmes() {
       alert('Programme code must be 2-20 characters.'); return;
     }
     try {
-      await api.post('/programmes', {
+      const created = await api.post('/programmes', {
         name: progForm.name.trim(),
         code: progForm.code.trim().toUpperCase(),
         durationYears: parseInt(progForm.durationYears) || 1,
@@ -45,6 +71,20 @@ export default function Programmes() {
         availableOffline: progForm.availableOffline,
         availableOnline: progForm.availableOnline,
       });
+      // Cost fields aren't accepted by the POST whitelist on the server today —
+      // create first, then PUT the costs in if any were entered. Avoids
+      // reaching into the create handler for what's purely an admin-side edit.
+      const newId = created?.data?.programme?.id;
+      const anyCost = ['totalCostDomestic','totalCostInternational','applicationFeeDomestic','applicationFeeInternational']
+        .some(k => progForm[k] !== '' && progForm[k] !== null && progForm[k] !== undefined);
+      if (newId && anyCost) {
+        await api.put(`/programmes/${newId}`, {
+          totalCostDomestic: progForm.totalCostDomestic === '' ? null : progForm.totalCostDomestic,
+          totalCostInternational: progForm.totalCostInternational === '' ? null : progForm.totalCostInternational,
+          applicationFeeDomestic: progForm.applicationFeeDomestic === '' ? null : progForm.applicationFeeDomestic,
+          applicationFeeInternational: progForm.applicationFeeInternational === '' ? null : progForm.applicationFeeInternational,
+        });
+      }
       setProgOpen(false); setProgForm(EMPTY_PROG); refetch();
     } catch (e) { alert(e.response?.data?.error || 'Error creating programme'); }
   };
@@ -57,6 +97,12 @@ export default function Programmes() {
       availableOffline: !!p.availableOffline,
       availableOnline: !!p.availableOnline,
       status: p.status || 'active',
+      // Decimal columns come back as strings from Prisma's JSON serializer; bind
+      // them straight into the form as-is so the user sees what's stored.
+      totalCostDomestic: p.totalCostDomestic ?? '',
+      totalCostInternational: p.totalCostInternational ?? '',
+      applicationFeeDomestic: p.applicationFeeDomestic ?? '',
+      applicationFeeInternational: p.applicationFeeInternational ?? '',
     });
     setProgEditOpen(true);
   };
@@ -65,6 +111,10 @@ export default function Programmes() {
     try {
       const { id, ...payload } = progEditForm;
       payload.durationYears = parseInt(payload.durationYears) || 1;
+      // Send '' as null so admins can explicitly clear a cost back to "TBD".
+      for (const k of ['totalCostDomestic', 'totalCostInternational', 'applicationFeeDomestic', 'applicationFeeInternational']) {
+        if (payload[k] === '' || payload[k] === undefined) payload[k] = null;
+      }
       await api.put(`/programmes/${id}`, payload);
       setProgEditOpen(false); refetch();
     } catch (e) { alert('Save failed: ' + (e.response?.data?.error || e.message)); }
@@ -208,6 +258,7 @@ export default function Programmes() {
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><input type="checkbox" checked={progForm.availableOffline} onChange={e => setProgForm(f => ({ ...f, availableOffline: e.target.checked }))} /> Offline Available</label>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><input type="checkbox" checked={progForm.availableOnline} onChange={e => setProgForm(f => ({ ...f, availableOnline: e.target.checked }))} /> Online Available</label>
             </div>
+            <CostsSection form={progForm} setForm={setProgForm} />
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
             <Btn variant="outline" onClick={() => setProgOpen(false)}>Cancel</Btn>
@@ -231,6 +282,7 @@ export default function Programmes() {
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><input type="checkbox" checked={progEditForm.availableOnline} onChange={e => setProgEditForm(f => ({ ...f, availableOnline: e.target.checked }))} /> Online Available</label>
             </div>
             <Select label="Status" value={progEditForm.status} onChange={e => setProgEditForm(f => ({ ...f, status: e.target.value }))} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]} />
+            <CostsSection form={progEditForm} setForm={setProgEditForm} />
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
             <Btn variant="outline" onClick={() => setProgEditOpen(false)}>Cancel</Btn>
