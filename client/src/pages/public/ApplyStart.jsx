@@ -15,7 +15,7 @@
 //     source of truth and the server re-checks at /start
 
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { useForm, useFieldArray } from 'react-hook-form';
 import api from '../../utils/api';
 import { Btn } from '../../components/common';
@@ -1826,7 +1826,8 @@ function formatBytes(n) {
 // The Submit button is stubbed in sub-stage 1 — sub-stage 2 will wire the
 // actual /submit call + payment-pending transition.
 // ──────────────────────────────────────────────────────────────────────────────
-function Step7Summary({ applicantType, programmes, formData, onEdit, onBack, saving }) {
+function Step7Summary({ applicantType, programmes, formData, draftCode, email, onEdit, onBack, saving }) {
+  const navigate = useNavigate();
   const isDomestic = applicantType === 'DOMESTIC';
   const studyMode = String(formData.studyMode || '').toUpperCase();
   const isOfflineDomestic = isDomestic && studyMode === 'OFFLINE';
@@ -1845,6 +1846,8 @@ function Step7Summary({ applicantType, programmes, formData, onEdit, onBack, sav
   const [commitmentDecl, setCommitmentDecl] = useState(false);
   const [feeDecl, setFeeDecl] = useState(false);
   const [declError, setDeclError] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
 
   const allChecked =
     studentDecl &&
@@ -1852,25 +1855,50 @@ function Step7Summary({ applicantType, programmes, formData, onEdit, onBack, sav
     feeDecl &&
     (!parentDeclRequired || parentDecl);
 
-  const handleSubmitClick = () => {
+  const handleSubmitClick = async () => {
     setDeclError(null);
+    setSubmitError(null);
     if (!allChecked) {
       setDeclError('Please review and check all declarations to continue.');
       return;
     }
-    // Stubbed for sub-stage 1 — sub-stage 2 wires the real /submit call and
-    // payment-gated success transition. Logging here keeps a paper trail in
-    // the console when the form is exercised pre-payment-integration.
-    // eslint-disable-next-line no-console
-    console.log('[Step 7] Submit stubbed; sub-stage 2 wires /submit + payment', {
-      draftCode: formData.__draftCode,
-      decls: {
-        studentDeclarationAgreed: true,
-        parentDeclarationAgreed: parentDeclRequired ? true : null,
-        commitmentStatementAgreed: true,
-        feeDeclarationAgreed: true,
-      },
-    });
+    if (!draftCode || !email) {
+      setSubmitError('Your draft session has expired. Please reload the page and continue from /apply.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const body = {
+        email,
+        declarations: {
+          studentDeclarationAgreed: true,
+          parentDeclarationAgreed: parentDeclRequired ? true : null,
+          commitmentStatementAgreed: true,
+          feeDeclarationAgreed: true,
+        },
+      };
+      const { data } = await api.post(
+        `/public/applications/draft/${encodeURIComponent(draftCode)}/submit`,
+        body,
+      );
+      // Clear the local draft credentials so the applicant can't accidentally
+      // re-edit a submitted application by reloading /apply/start. The
+      // server-side draft row is intentionally preserved (Applicant.draftId
+      // FK holds the binding) for any future retry flow.
+      try {
+        localStorage.removeItem(LS_CODE);
+        localStorage.removeItem(LS_EMAIL);
+      } catch (_e) { /* tolerate storage-disabled browsers */ }
+      navigate(`/apply/payment/${encodeURIComponent(data.applicationNo)}?email=${encodeURIComponent(email)}`);
+    } catch (err) {
+      const details = err?.response?.data?.details;
+      const baseMsg = err?.response?.data?.error || 'Submit failed. Please try again.';
+      const fullMsg = Array.isArray(details) && details.length
+        ? `${baseMsg} — ${details.join('; ')}`
+        : baseMsg;
+      setSubmitError(fullMsg);
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -1904,16 +1932,21 @@ function Step7Summary({ applicantType, programmes, formData, onEdit, onBack, sav
         feeDecl={feeDecl}             setFeeDecl={setFeeDecl}
       />
 
-      {declError && (
+      {submitError && (
+        <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', borderRadius: 8, fontSize: 13, marginTop: 14 }}>
+          {submitError}
+        </div>
+      )}
+      {declError && !submitError && (
         <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', borderRadius: 8, fontSize: 13, marginTop: 14 }}>
           {declError}
         </div>
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 28, gap: 8, flexWrap: 'wrap' }}>
-        <Btn type="button" variant="outline" onClick={onBack} disabled={saving}>← Back</Btn>
-        <Btn type="button" onClick={handleSubmitClick} disabled={!allChecked || saving}>
-          Submit Application & Continue to Payment
+        <Btn type="button" variant="outline" onClick={onBack} disabled={saving || submitting}>← Back</Btn>
+        <Btn type="button" onClick={handleSubmitClick} disabled={!allChecked || saving || submitting}>
+          {submitting ? 'Submitting…' : 'Submit Application & Continue to Payment'}
         </Btn>
       </div>
     </div>
@@ -2609,6 +2642,8 @@ export default function ApplyStart() {
           applicantType={applicantType}
           programmes={programmes}
           formData={formData}
+          draftCode={draftCode}
+          email={email}
           onEdit={(stepId) => setCurrentStep(stepId)}
           onBack={() => setCurrentStep(6)}
           saving={saving}

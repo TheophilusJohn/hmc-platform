@@ -803,11 +803,23 @@ function toDateOrNull(v) {
 // ──────────────────────────────────────────────────────────────────────────────
 router.post('/applications/draft/:code/submit', writeLimiter, async (req, res, next) => {
   try {
-    const { email } = req.body || {};
+    const { email, declarations } = req.body || {};
     const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
     if (error) return res.status(status).json({ error });
 
-    const fd = (draft.formData && typeof draft.formData === 'object') ? draft.formData : {};
+    // Declarations are captured on Step 7 (Review) and posted alongside the
+    // /submit call — they're never persisted to the draft.formData on their
+    // own. Merge them into the working `fd` so validateSubmission + the
+    // Applicant.create downstream see them as ordinary boolean columns.
+    const rawDecls = (declarations && typeof declarations === 'object') ? declarations : {};
+    const fdBase = (draft.formData && typeof draft.formData === 'object') ? draft.formData : {};
+    const fd = {
+      ...fdBase,
+      ...(rawDecls.studentDeclarationAgreed   === true ? { studentDeclarationAgreed:   true } : {}),
+      ...(rawDecls.parentDeclarationAgreed    === true ? { parentDeclarationAgreed:    true } : {}),
+      ...(rawDecls.commitmentStatementAgreed  === true ? { commitmentStatementAgreed:  true } : {}),
+      ...(rawDecls.feeDeclarationAgreed       === true ? { feeDeclarationAgreed:       true } : {}),
+    };
     const errors = validateSubmission(draft, fd);
     if (errors.length) return res.status(400).json({ error: 'Application is incomplete', details: errors });
 
@@ -819,13 +831,28 @@ router.post('/applications/draft/:code/submit', writeLimiter, async (req, res, n
     const studyModeFinal = studentTypeEnum === 'INTERNATIONAL' ? 'ONLINE' : String(fd.studyMode).toUpperCase();
 
     // Resolve programme by code (validation ensured programmeCode is set).
+    // Pull the per-type application fees so the submit response can return the
+    // amount the applicant owes — saves the FE a round-trip on the way to the
+    // payment-pending page.
     const programme = await prisma.programme.findUnique({
       where: { code: draft.programmeCode },
-      select: { id: true, code: true, name: true, status: true },
+      select: {
+        id: true, code: true, name: true, status: true,
+        applicationFeeDomestic: true, applicationFeeInternational: true,
+      },
     });
     if (!programme || programme.status !== 'active') {
       return res.status(400).json({ error: 'Programme is no longer available' });
     }
+    // Application fee + currency are derived from studentType (which already
+    // governs which Programme fee column is canonical for this applicant).
+    // Decimal columns come back as Prisma.Decimal — toString() preserves them
+    // exactly; FE renders via the same formatMoney() helper as Step 7.
+    const applicationFeeDec = studentTypeEnum === 'INTERNATIONAL'
+      ? programme.applicationFeeInternational
+      : programme.applicationFeeDomestic;
+    const paymentAmount   = applicationFeeDec != null ? applicationFeeDec.toString() : null;
+    const paymentCurrency = studentTypeEnum === 'INTERNATIONAL' ? 'USD' : 'INR';
 
     // formData snapshot for back-compat with the existing flatten() readers in
     // admissions.js — Pipeline.jsx reads firstName/lastName/email/etc. through
@@ -898,6 +925,13 @@ router.post('/applications/draft/:code/submit', writeLimiter, async (req, res, n
               source: 'PUBLIC_FORM',
               submittedAt,
               draftId: draft.id,
+              // Payment is orthogonal to admissions pipeline: applicant lands
+              // in RECEIVED + PENDING. Admin / Razorpay webhook later flips
+              // paymentStatus to PAID or WAIVED. The draftId binding lets the
+              // payment-pending page (and any retry flow) reach back to the
+              // draft if needed; submit handler does NOT delete the draft.
+              paymentStatus: 'PENDING',
+              paymentStatusUpdatedAt: submittedAt,
               formData: flattenSnapshot,
               // ── Individual columns mirrored from formData ─────────────────
               // Personal
@@ -1041,6 +1075,10 @@ router.post('/applications/draft/:code/submit', writeLimiter, async (req, res, n
     res.status(201).json({
       applicationNo: applicant.applicationNo,
       applicantId: applicant.id,
+      paymentStatus: 'PENDING',
+      paymentAmount,
+      paymentCurrency,
+      nextStep: 'PAYMENT',
     });
   } catch (err) { next(err); }
 });
@@ -1082,6 +1120,66 @@ router.get('/applications/status', async (req, res, next) => {
       status: a.pipelineStage,
       submittedAt: a.submittedAt,
       lastUpdate: a.updatedAt,
+    });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /api/public/applications/:applicationNo/payment-status?email=...
+// Email-verified, same anti-enumeration pattern as /status: generic 404 on no
+// match OR email mismatch so a caller can't probe whether an applicationNo
+// exists. Returns the data the /apply/payment page needs to render — current
+// payment state + amount + currency + applicant + programme labels.
+// ──────────────────────────────────────────────────────────────────────────────
+router.get('/applications/:applicationNo/payment-status', async (req, res, next) => {
+  try {
+    const { applicationNo } = req.params;
+    const { email } = req.query;
+    if (!applicationNo || typeof applicationNo !== 'string') {
+      return res.status(400).json({ error: 'applicationNo is required' });
+    }
+    if (!isEmail(email)) return res.status(400).json({ error: 'email is required' });
+
+    const a = await prisma.applicant.findUnique({
+      where: { applicationNo: String(applicationNo).trim() },
+      select: {
+        id: true,
+        applicationNo: true,
+        studentType: true,
+        paymentStatus: true,
+        formData: true,
+        programme: {
+          select: {
+            name: true, code: true,
+            applicationFeeDomestic: true,
+            applicationFeeInternational: true,
+          },
+        },
+      },
+    });
+    const failGeneric = () => res.status(404).json({ error: 'Application not found' });
+    if (!a) return failGeneric();
+    const storedEmail = normEmail(a.formData?.email);
+    if (!storedEmail || storedEmail !== normEmail(email)) return failGeneric();
+
+    const isIntl = a.studentType === 'INTERNATIONAL';
+    const feeDec = isIntl
+      ? a.programme?.applicationFeeInternational
+      : a.programme?.applicationFeeDomestic;
+    const paymentAmount   = feeDec != null ? feeDec.toString() : null;
+    const paymentCurrency = isIntl ? 'USD' : 'INR';
+
+    const firstName = String(a.formData?.firstName || '').trim();
+    const lastName  = String(a.formData?.lastName  || '').trim();
+    const applicantName = [firstName, lastName].filter(Boolean).join(' ');
+
+    res.json({
+      applicationNo: a.applicationNo,
+      applicantName,
+      programmeName: a.programme?.name || '',
+      paymentStatus: a.paymentStatus || 'PENDING',
+      paymentAmount,
+      paymentCurrency,
     });
   } catch (err) { next(err); }
 });

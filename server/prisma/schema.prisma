@@ -976,6 +976,12 @@ model Applicant {
   feeDeclarationSponsorName    String?
   feeDeclarationSponsorContact String?
   feeDeclarationSponsorEmail   String?
+  // ── Payment state (Phase 2c: sub-stage 2) ────────────────────────────────
+  // Orthogonal to pipelineStage — admissions review only opens after payment
+  // is confirmed. WAIVED covers full-scholarship and admin-marked-paid cases.
+  paymentStatus            String?   @default("PENDING") // PENDING | PAID | WAIVED
+  paymentStatusUpdatedAt   DateTime?
+  paymentReceiptUrl        String?   // Razorpay confirmation URL or admin-uploaded receipt
   // Link to the originating draft (one-to-one)
   draftId           String?       @unique
   // ─────────────────────────────────────────────────────────────────────────────
@@ -997,6 +1003,7 @@ model Applicant {
   @@index([status])
   @@index([intakeYear])
   @@index([source])
+  @@index([paymentStatus])
 }
 
 model ApplicantDocument {
