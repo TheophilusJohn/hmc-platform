@@ -683,9 +683,6 @@ function validateSubmission(draft, fd) {
   if (!nonEmptyString(fd.nationality)) errors.push('nationality is required');
   if (!nonEmptyString(fd.maritalStatus)) errors.push('maritalStatus is required');
   if (!nonEmptyString(fd.mobile))    errors.push('mobile is required');
-  if (!nonEmptyString(fd.presentAddressLine)) errors.push('presentAddressLine is required');
-  if (!nonEmptyString(fd.presentAddressState)) errors.push('presentAddressState is required');
-  if (!nonEmptyString(fd.presentAddressCountry)) errors.push('presentAddressCountry is required');
   if (!nonEmptyString(fd.emergencyContact)) errors.push('emergencyContact is required');
   // receivedChrist (and receivedChristWhen) removed from the required set —
   // spiritual conversion is now captured via the salvationTestimony textarea
@@ -753,6 +750,16 @@ function validateSubmission(draft, fd) {
       needsAidRelevant = true;
     }
     if (!nonEmptyString(fd.feeResponsibility)) errors.push('feeResponsibility is required for domestic applicants');
+    // Present address is domestic-only — Step 2's onSubmit clears these fields
+    // to '' for international applicants (who supply countryOfResidence +
+    // cityOfResidence + passport instead, with a UI note that detailed mailing
+    // address isn't required at this stage). Permanent-address fields stay
+    // optional on both sides; the FE's "same as present" checkbox handles the
+    // common case but the columns can legitimately be null on submit.
+    if (!nonEmptyString(fd.presentAddressLine))    errors.push('presentAddressLine is required for domestic applicants');
+    if (!nonEmptyString(fd.presentAddressState))   errors.push('presentAddressState is required for domestic applicants');
+    if (!nonEmptyString(fd.presentAddressCountry)) errors.push('presentAddressCountry is required for domestic applicants');
+    if (!nonEmptyString(fd.presentAddressPin))     errors.push('presentAddressPin is required for domestic applicants');
   } else if (draft.studentType === 'international') {
     if (!isBoolAnswered(fd.needsFinancialAid)) errors.push('needsFinancialAid must be answered');
     needsAidRelevant = true;
