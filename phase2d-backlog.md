@@ -76,6 +76,33 @@ pass should sweep all Phase 2 write paths for similar mismatches.
    If the detail-tier shape keeps growing, factor out a richer
    `flattenDetail()` so the list payload stays lean.
 
+## UX polish (applicant-facing public flow)
+
+10. **`/apply/continue` with a submitted draft** — currently returns the
+    generic 404 "We couldn't find an application matching that code and
+    email" because the backend's `loadDraftForAccess` treats a draft
+    bound to a submitted Applicant as inaccessible. The draft does
+    exist; the message is misleading. Polish: detect the submitted
+    state (the existing `Applicant.draftId @unique` FK reveals it via
+    `draft.applicant`) and return either
+    (a) a distinct error: "This application has already been submitted.
+        Check status at /apply/status with your application number
+        HMC-APP-XXXX." (includes the `applicationNo` so the applicant
+        can self-serve), or
+    (b) include `applicationNo` in the response and have the FE redirect
+        to `/apply/status?applicationNo=…`.
+    Both options reveal whether a draft is submitted — a small
+    information leak. Judgment call on whether the UX gain justifies
+    it. Discussion-worthy in the audit pass.
+
+11. **`/apply` landing page discoverability** — verify the public
+    landing has visible "Continue Application" and "Check Status" links
+    so applicants who haven't bookmarked the pages can find them.
+    Currently uncertain whether these links exist on the landing page;
+    Step 0 (StepIntro) of `/apply/start` has the "Already started?
+    Continue your application" link but `/apply` itself (`ApplyPage.jsx`)
+    may not. Fix if missing.
+
 ## Endpoint consolidation
 
 After the `/status` extension in sub-stage 3 (Day 5), `/payment-status` is
