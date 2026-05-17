@@ -74,19 +74,31 @@ const FORM_KEYS = new Set([
   // International-only
   'passportNumber', 'passportCountryOfIssue', 'countryOfResidence', 'cityOfResidence',
   'currentVisaStatus', 'intendedIndianVisa', 'indiaEmergencyContact',
-  // Background
+  // Background — original Phase 2a narrative slots
   'substanceHistory', 'criminalHistory', 'influenceForApplying',
+  // Background — family fields collected on Step 3 of the public form.
+  // These don't have dedicated columns on Applicant (no schema change this
+  // stage); they live in formData JSON for later admin viewing via flatten.
+  'fatherName', 'fatherOccupation', 'motherName', 'motherOccupation',
+  'numberOfSiblings', 'familyChurchAffiliation', 'familyChristianBackground',
   // Education
   'technicalQualification', 'theologicalQualification',
   'currentlyEmployed', 'workExperience',
   'educationEntries', 'languages',
-  // Spiritual
+  // Spiritual — Phase 2a column-backed keys
   'receivedChrist', 'receivedChristWhen',
   'waterBaptism', 'waterBaptismWhen',
   'salvationTestimony',
   'churchDenomination', 'churchName', 'churchAddress',
   'pastorName', 'pastorAddress',
   'holySpiritInfilling', 'callForMinistry',
+  // Spiritual — Step 4 fields without dedicated columns; formData-only.
+  // baptismStatus is the tri-state 'Baptized' | 'Not yet baptized' | 'Prefer
+  // not to say' from the radio; the submit handler also derives the existing
+  // boolean waterBaptism + waterBaptismWhen columns from it.
+  'baptismStatus', 'baptismDate', 'baptismLocation',
+  'yearsAtCurrentChurch', 'previousChurches', 'spiritualGifts',
+  'ministryInvolvement', 'whyHmc', 'futureMinistryPlans',
   // Financial
   'sponsoredByOrg', 'paymentMethod', 'commitTwoHoursDaily', 'feeResponsibility',
   'sponsorName', 'sponsorDetails', 'sponsorContact', 'sponsorEmail',
@@ -580,6 +592,20 @@ function nonEmptyString(v) {
 function isBoolAnswered(v) {
   return v === true || v === false;
 }
+// Whole-years age from a YYYY-MM-DD string (or any parseable date). Returns
+// null when the input is missing or unparseable — callers handle that by
+// skipping the age-gated check, since dateOfBirth is already a required
+// field elsewhere in validateSubmission.
+function ageInYearsFrom(dobString) {
+  if (!dobString) return null;
+  const d = new Date(dobString);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+}
 
 function validateSubmission(draft, fd) {
   const errors = [];
@@ -597,20 +623,48 @@ function validateSubmission(draft, fd) {
   if (!nonEmptyString(fd.presentAddressState)) errors.push('presentAddressState is required');
   if (!nonEmptyString(fd.presentAddressCountry)) errors.push('presentAddressCountry is required');
   if (!nonEmptyString(fd.emergencyContact)) errors.push('emergencyContact is required');
-  if (!isBoolAnswered(fd.receivedChrist)) errors.push('receivedChrist must be answered');
+  // receivedChrist (and receivedChristWhen) removed from the required set —
+  // spiritual conversion is now captured via the salvationTestimony textarea
+  // and the baptismStatus radio on Step 4. The binary "did you receive
+  // Christ" was redundant. Column writes still tolerate either value.
   if (!isBoolAnswered(fd.waterBaptism))   errors.push('waterBaptism must be answered');
   if (!nonEmptyString(fd.churchName))    errors.push('churchName is required');
   if (!nonEmptyString(fd.pastorName))    errors.push('pastorName is required');
+  // Declaration agreements collected on Application Summary screen (Stage 2b-3).
   if (fd.studentDeclarationAgreed   !== true) errors.push('studentDeclarationAgreed must be true');
   if (fd.commitmentStatementAgreed  !== true) errors.push('commitmentStatementAgreed must be true');
   if (fd.feeDeclarationAgreed       !== true) errors.push('feeDeclarationAgreed must be true');
+  // Parent declaration: required only for applicants under 18. Adult
+  // applicants (18+) sign as legally-responsible adults via
+  // studentDeclarationAgreed and don't need parental sign-off.
+  // Step 2 enforces age >= 16 client-side, so the genuine minor case here
+  // is 16- and 17-year-olds. If DOB is missing/invalid this check is
+  // skipped — DOB itself is already required earlier in this function, so
+  // reaching here without it would fail the request anyway.
+  const ageAtSubmit = ageInYearsFrom(fd.dateOfBirth);
+  if (ageAtSubmit !== null && ageAtSubmit < 18) {
+    if (fd.parentDeclarationAgreed !== true) {
+      errors.push('parentDeclarationAgreed must be true for applicants under 18');
+    }
+  }
   if (!nonEmptyString(draft.programmeCode)) errors.push('programmeCode is required');
 
-  // Conditional — by studentType
+  // ── Financial fork (Stage 2b-2 expansion) ─────────────────────────────────
+  // Three-way matrix:
+  //   DOMESTIC + OFFLINE   → paymentMethod ∈ {fees, workScholarship}; if
+  //                          scholarship then commitTwoHoursDaily=true; fee
+  //                          responsibility required; needsFinancialAid IGNORED
+  //                          (offline applicants pay at the university or via
+  //                          campus work — no financial-aid path).
+  //   DOMESTIC + ONLINE    → paymentMethod must be 'fees'; needsFinancialAid
+  //                          required (NEW); feeResponsibility required.
+  //   INTERNATIONAL        → paymentMethod must be 'fees'; needsFinancialAid
+  //                          required; feeResponsibility IGNORED (no granularity
+  //                          needed for the international cohort).
+  // In every branch where needsFinancialAid is required and answered true,
+  // financialAidNote is also required and capped at 1000 chars.
+  let needsAidRelevant = false;
   if (draft.studentType === 'domestic') {
-    // Domestic applicants pick OFFLINE (on-campus) vs ONLINE explicitly.
-    // Work scholarship is OFFLINE-only — online students aren't on campus to
-    // do the two-hour daily commitment.
     const sm = String(fd.studyMode || '').toUpperCase();
     if (sm !== 'OFFLINE' && sm !== 'ONLINE') {
       errors.push('studyMode must be "OFFLINE" or "ONLINE" for domestic applicants');
@@ -623,15 +677,21 @@ function validateSubmission(draft, fd) {
       if (pm === 'workScholarship' && fd.commitTwoHoursDaily !== true) {
         errors.push('commitTwoHoursDaily must be true when workScholarship is selected');
       }
+      // needsFinancialAid intentionally NOT validated here — offline applicants
+      // don't see the question and the column stays null.
     } else if (sm === 'ONLINE') {
-      // No campus → no workScholarship option. commitTwoHoursDaily is ignored.
       if (pm !== 'fees') {
         errors.push('paymentMethod must be "fees" for domestic-online (workScholarship is offline-only)');
       }
+      if (!isBoolAnswered(fd.needsFinancialAid)) {
+        errors.push('needsFinancialAid must be answered for domestic-online applicants');
+      }
+      needsAidRelevant = true;
     }
     if (!nonEmptyString(fd.feeResponsibility)) errors.push('feeResponsibility is required for domestic applicants');
   } else if (draft.studentType === 'international') {
     if (!isBoolAnswered(fd.needsFinancialAid)) errors.push('needsFinancialAid must be answered');
+    needsAidRelevant = true;
     if (String(fd.paymentMethod || '') !== 'fees') {
       errors.push('paymentMethod must be "fees" for international applicants (workScholarship not allowed)');
     }
@@ -639,11 +699,22 @@ function validateSubmission(draft, fd) {
     if (!nonEmptyString(fd.passportCountryOfIssue)) errors.push('passportCountryOfIssue is required for international applicants');
     if (!nonEmptyString(fd.countryOfResidence))     errors.push('countryOfResidence is required for international applicants');
     if (!nonEmptyString(fd.cityOfResidence))        errors.push('cityOfResidence is required for international applicants');
-    if (!nonEmptyString(fd.currentVisaStatus))      errors.push('currentVisaStatus is required for international applicants');
-    if (!nonEmptyString(fd.intendedIndianVisa))     errors.push('intendedIndianVisa is required for international applicants');
-    if (!nonEmptyString(fd.indiaEmergencyContact))  errors.push('indiaEmergencyContact is required for international applicants');
+    // currentVisaStatus / intendedIndianVisa / indiaEmergencyContact dropped
+    // per the earlier leadership decision: international students are online-
+    // only and don't come to India. Columns remain in the schema but stay
+    // null; the submit handler tolerates that.
   } else {
     errors.push('studentType on draft is invalid');
+  }
+
+  // financialAidNote required + length-capped when needsFinancialAid was both
+  // relevant for this applicant type and answered true.
+  if (needsAidRelevant && fd.needsFinancialAid === true) {
+    if (!nonEmptyString(fd.financialAidNote)) {
+      errors.push('financialAidNote is required when needsFinancialAid is true');
+    } else if (String(fd.financialAidNote).length > 1000) {
+      errors.push('financialAidNote exceeds 1000 character cap');
+    }
   }
 
   return errors;
