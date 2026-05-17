@@ -23,6 +23,7 @@ const feeRoutes = require('./routes/fees');
 const paymentRoutes = require('./routes/payments');
 const hostelRoutes = require('./routes/hostel');
 const admissionsRoutes = require('./routes/admissions');
+const scholarshipsRoutes = require('./routes/scholarships');
 const referenceRoutes = require('./routes/references');
 const referralRoutes = require('./routes/referrals');
 const messageRoutes = require('./routes/messages');
@@ -151,6 +152,11 @@ app.set('trust proxy', 1);
   app.use('/api/fee-types', feeTypeRoutes);
   app.use('/api/payments', paymentRoutes);
   app.use('/api/hostel', hostelRoutes);
+  // Mount BEFORE /api/admissions so the more-specific sub-prefix wins —
+  // otherwise GET /api/admissions/scholarships would fall through to
+  // admissions.js's GET /:id handler and 404 (treating "scholarships"
+  // as an applicant id).
+  app.use('/api/admissions/scholarships', scholarshipsRoutes);
   app.use('/api/admissions', admissionsRoutes);
   app.use('/api/referrals', referralRoutes);
   app.use('/api/messages', messageRoutes);

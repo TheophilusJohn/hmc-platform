@@ -25,6 +25,7 @@ const Pipeline = lazy(() => import('./pages/admissions/Pipeline'));
 const NewApplicant = lazy(() => import('./pages/admissions/NewApplicant'));
 const Interviews = lazy(() => import('./pages/admissions/Interviews'));
 const References = lazy(() => import('./pages/admissions/References'));
+const Scholarships = lazy(() => import('./pages/admissions/Scholarships'));
 const FeeRecording = lazy(() => import('./pages/admissions/FeeRecording'));
 
 const FacultyLayout = lazy(() => import('./pages/faculty/FacultyLayout'));
@@ -184,6 +185,7 @@ export default function App() {
             <Route path="new" element={<NewApplicant />} />
             <Route path="interviews" element={<Interviews />} />
             <Route path="references" element={<References />} />
+            <Route path="scholarships" element={<Scholarships />} />
             <Route path="fees" element={<FeeRecording />} />
           </Route>
 

@@ -103,6 +103,32 @@ pass should sweep all Phase 2 write paths for similar mismatches.
     Continue your application" link but `/apply` itself (`ApplyPage.jsx`)
     may not. Fix if missing.
 
+## Auth alignment
+
+### FE/BE auth mismatch on `/admissions/*` tree
+
+Backend `admissionsAccess` middleware accepts FULL_ADMIN + TEACHER_ADMIN
++ ADMISSIONS_OFFICER (`server/src/middleware/rbac.js` consumers across
+`server/src/routes/admissions.js` and `server/src/routes/scholarships.js`).
+Frontend `<AuthGuard roles={...}>` on `/admissions/*` accepts only
+ADMISSIONS_OFFICER + FULL_ADMIN (no TEACHER_ADMIN — `App.jsx` ~line 181).
+
+TEACHER_ADMIN users can hit `/api/admissions/*` endpoints directly
+(curl / API client) but cannot navigate to `/admissions/*` pages via URL
+— the FE AuthGuard rejects them before any admissions UI renders.
+
+Pre-existing mismatch — predates Phase 2c. Surfaced during sub-stage 4
+implementation when adding `scholarships.js` which uses the same
+`admissionsAccess` pattern.
+
+Fix: tighten the FE AuthGuard to match the BE:
+```jsx
+<AuthGuard roles={['ADMISSIONS_OFFICER', 'TEACHER_ADMIN', 'FULL_ADMIN']}>
+```
+Single-line change in `App.jsx`. Warrants a click test of every
+`/admissions/*` page with a TEACHER_ADMIN account to verify no
+regressions for the existing roles.
+
 ## Endpoint consolidation
 
 After the `/status` extension in sub-stage 3 (Day 5), `/payment-status` is

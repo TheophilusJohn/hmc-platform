@@ -307,6 +307,7 @@ model User {
   chargesAdded       StudentFeeLedger[] @relation("ChargeAdder")
   interviewsConducted Applicant[]     @relation("Interviewer")
   admissionsDecisions Applicant[]     @relation("DecisionMaker")
+  scholarshipDecisions ScholarshipApplication[] @relation("ScholarshipDecider")
   transcriptRequests  OfficialTranscriptRequest[] @relation("TranscriptAdmin")
   profileChangeRequests ProfileChangeRequest[]
   profileChangeReviewers ProfileChangeRequest[] @relation("ChangeReviewer")
@@ -997,6 +998,7 @@ model Applicant {
   draft             ApplicantDraft?      @relation(fields: [draftId], references: [id], onDelete: SetNull)
   educationEntries  ApplicantEducation[]
   languages         ApplicantLanguage[]
+  scholarshipApplication ScholarshipApplication?
 
   @@index([programmeId])
   @@index([pipelineStage])
@@ -1102,6 +1104,53 @@ model ApplicantLanguage {
 
   @@index([applicantId])
 }
+
+// ─── SCHOLARSHIP HANDLING (Phase 2c) ──────────────────────────────────────────
+// Created in the same /submit transaction as the Applicant row when the
+// applicant elected workScholarship (domestic-offline only) or answered
+// needsFinancialAid=true (domestic-online + international). Admin review +
+// decision flow lives in server/src/routes/scholarships.js. Decision-side
+// fields (decidedBy/decidedAt/decisionNotes/approvedAmount/approvedCurrency)
+// stay null until sub-stage 5 wires the PUT endpoint.
+
+model ScholarshipApplication {
+  id                String    @id @default(cuid())
+  applicantId       String    @unique  // one scholarship application per applicant
+  // 'workScholarship' (domestic-offline 2-hrs/day commitment) or
+  // 'financialAid' (online + international fee-relief request). Derived
+  // from form data at intake; the applicant doesn't pick this label.
+  requestType       String
+  // Copy of financialAidNote from Step 5 (when requestType=financialAid).
+  applicantNote     String?   @db.Text
+  // Copy of commitTwoHoursDaily flag (when requestType=workScholarship).
+  workCommitment    Boolean?
+  // 'PENDING' | 'APPROVED' | 'PARTIAL' | 'DECLINED'. Defaults to PENDING
+  // until an admin acts via the sub-stage 5 PUT endpoint.
+  status            String    @default("PENDING")
+  // Applicants don't specify a requested amount today — kept nullable for
+  // forward-compat with a possible future "request amount" UI.
+  requestedAmount   Decimal?  @db.Decimal(10, 2)
+  // Admin-approved amount (full or partial) + the currency it's denominated
+  // in. Currency matches the applicant's studentType-derived currency.
+  approvedAmount    Decimal?  @db.Decimal(10, 2)
+  approvedCurrency  String?   // 'INR' | 'USD'
+  // Decision attribution. decidedBy FKs to User.id (the admin who clicked
+  // Approve/Partial/Decline). decisionNotes is surfaced to the applicant
+  // on /apply/status — required for PARTIAL or DECLINED outcomes per the
+  // sub-stage 5 spec.
+  decidedBy         String?
+  decidedAt         DateTime?
+  decisionNotes     String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  applicant         Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+  decider           User?     @relation("ScholarshipDecider", fields: [decidedBy], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([applicantId])
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 model ReferralProgramme {

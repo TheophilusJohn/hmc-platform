@@ -10,6 +10,7 @@ const NAV = [
   { id: 'new', label: 'New Applicant', icon: '➕', path: '/admissions/new' },
   { id: 'interviews', label: 'Interviews', icon: '🗓️', path: '/admissions/interviews' },
   { id: 'references', label: 'References', icon: '📝', path: '/admissions/references' },
+  { id: 'scholarships', label: 'Scholarships', icon: '🎓', path: '/admissions/scholarships' },
   { id: 'fees', label: 'Record Fees', icon: '💰', path: '/admissions/fees' },
 ];
 

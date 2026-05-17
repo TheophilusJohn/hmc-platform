@@ -1066,6 +1066,31 @@ router.post('/applications/draft/:code/submit', writeLimiter, async (req, res, n
             });
           }
 
+          // Scholarship application — created conditionally in the same
+          // transaction so failure here rolls back the Applicant row too.
+          // Trigger logic (mutually exclusive per Step 5's validation matrix):
+          //   workScholarship  → only reachable in DOMESTIC + OFFLINE
+          //                      (paymentMethod === 'workScholarship')
+          //   financialAid     → DOMESTIC + ONLINE and INTERNATIONAL paths
+          //                      (needsFinancialAid === true)
+          // If neither fires, no scholarship row is created — the applicant
+          // is paying full fees and admin doesn't need to triage their case.
+          const requestType = fd.paymentMethod === 'workScholarship'
+            ? 'workScholarship'
+            : (fd.needsFinancialAid === true ? 'financialAid' : null);
+          if (requestType) {
+            await tx.scholarshipApplication.create({
+              data: {
+                applicantId: created.id,
+                requestType,
+                applicantNote:  requestType === 'financialAid'    ? (fd.financialAidNote || null) : null,
+                workCommitment: requestType === 'workScholarship' ? (fd.commitTwoHoursDaily === true) : null,
+                // status defaults to 'PENDING'; decision-side fields stay
+                // null until the sub-stage 5 admin PUT endpoint runs.
+              },
+            });
+          }
+
           return created;
         });
         break;
