@@ -1882,7 +1882,7 @@ function Step7Summary({ applicantType, programmes, formData, onEdit, onBack, sav
         Review your information below before submitting. Use the <strong>Edit</strong> links to make changes.
       </p>
 
-      <SummaryProgrammeSection formData={formData} programme={programme} onEdit={() => onEdit(1)} />
+      <SummaryProgrammeSection formData={formData} programme={programme} applicantType={applicantType} onEdit={() => onEdit(1)} />
       <SummaryPersonalSection formData={formData} isDomestic={isDomestic} onEdit={() => onEdit(2)} />
       <SummaryBackgroundSection formData={formData} onEdit={() => onEdit(3)} />
       <SummarySpiritualSection formData={formData} onEdit={() => onEdit(4)} />
@@ -1980,13 +1980,16 @@ function Row({ label, value }) {
   );
 }
 
-function SummaryProgrammeSection({ formData, programme, onEdit }) {
+function SummaryProgrammeSection({ formData, programme, applicantType, onEdit }) {
   const programmeLabel = programme
     ? `${programme.name} (${programme.code})`
     : (formData.programmeCode || '—');
+  // International applicants never picked a studyMode (it's implicit ONLINE
+  // and the server hardcodes it at submit time). Display "Online" rather
+  // than a confusing dash on the Summary screen for those applicants.
   const studyModeLabel = formData.studyMode
     ? String(formData.studyMode).charAt(0) + String(formData.studyMode).slice(1).toLowerCase()
-    : '—';
+    : (applicantType === 'INTERNATIONAL' ? 'Online' : '—');
   return (
     <SectionCard title="Programme" onEdit={onEdit}>
       <Row label="Programme" value={programmeLabel} />
@@ -2383,7 +2386,18 @@ export default function ApplyStart() {
       try {
         const { data } = await api.get(`/public/applications/draft/${encodeURIComponent(draftCode)}?email=${encodeURIComponent(email)}`);
         if (cancelled) return;
-        setFormData(data.formData || {});
+        // Path A: surface draft.programmeCode (stored as a first-class column,
+        // stripped from draft.formData by the server's FORM_KEYS allowlist) into
+        // the FE's unified formData read view. Without this merge, Step 7's
+        // Programme card and Step 1's re-entry via Edit both render blank
+        // because pickForm on the server discards programmeCode from the JSON
+        // blob on save. studyMode is already round-tripped through FORM_KEYS
+        // for domestic; international studyMode is intentionally implicit and
+        // handled at render time in SummaryProgrammeSection.
+        setFormData({
+          ...(data.formData || {}),
+          programmeCode: data.programmeCode || null,
+        });
         const startAt = Math.max(1, Math.min(STEPS.length, parseInt(data.currentStep, 10) || 1));
         setCurrentStep(startAt);
       } catch (err) {
