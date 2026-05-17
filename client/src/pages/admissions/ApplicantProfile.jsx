@@ -4,21 +4,42 @@ import api from '../../utils/api';
 
 const STAGES = ['RECEIVED','DOCS_REVIEW','INTERVIEW_SCHEDULED','INTERVIEW_DONE','WAITLISTED','ACCEPTED','ENROLLED'];
 const STAGE_LABELS = { RECEIVED:'Received', DOCS_REVIEW:'Docs Review', INTERVIEW_SCHEDULED:'Interview Scheduled', INTERVIEW_DONE:'Interview Done', WAITLISTED:'Waitlisted', ACCEPTED:'Accepted', ENROLLED:'Enrolled', REJECTED:'Rejected' };
-// Canonical docType keys match ApplicantDocument.docType examples from
-// prisma/schema.prisma: 'photo', 'id_proof', 'academic_certs', 'health_cert',
-// etc. Pre-fix the label-to-key lookup used `d.toLowerCase().replace(/ /g,'_')`
-// which produced 'photo_id' / 'academic_transcripts' / 'church_letter' — none
-// matched, so every doc showed "Missing".
-const DOCS = [
-  { label: 'Photo ID', key: 'id_proof' },
-  { label: 'Photo', key: 'photo' },
-  { label: 'Academic Certificates', key: 'academic_certs' },
-  { label: 'Church Letter', key: 'church_letter' },
-  { label: 'Birth Certificate', key: 'birth_certificate' },
-  { label: 'Health Certificate', key: 'health_cert' },
-  { label: 'Statement of Faith', key: 'statement_of_faith' },
-  { label: 'Application Form', key: 'application_form' },
-];
+
+// Humanize a camelCase or snake_case docType into a display label:
+//   'birthCertificate'    → 'Birth Certificate'
+//   'characterReference1' → 'Character Reference 1'
+//   'id_proof'            → 'Id Proof'   (legacy admin-uploaded fallback)
+function humanizeDocType(key) {
+  if (!key) return 'Document';
+  return String(key)
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .map(w => w ? w[0].toUpperCase() + w.slice(1) : w)
+    .join(' ');
+}
+
+function formatBytes(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function valueOrDash(v) {
+  if (v == null) return '—';
+  const s = String(v).trim();
+  return s === '' ? '—' : s;
+}
+
+function yesNoOrDash(v) {
+  if (v === true) return 'Yes';
+  if (v === false) return 'No';
+  return '—';
+}
 
 export default function ApplicantProfile({ applicant: initial, onClose, onUpdate }) {
   const [applicant, setApplicant] = useState(initial);
@@ -146,34 +167,143 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
 
         <div style={{ flex: 1, padding: '16px 24px' }}>
           {tab === 'personal' && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {[['Full Name', `${applicant.firstName} ${applicant.lastName}`], ['Email', applicant.email], ['Phone', applicant.phone], ['DOB', applicant.dob], ['Gender', applicant.gender], ['Nationality', applicant.nationality], ['Marital Status', applicant.maritalStatus], ['Applied', new Date(applicant.createdAt).toLocaleDateString('en-IN')]].map(([l,v]) => (
-                <div key={l} style={{ padding: '8px 12px', background: '#F8F9FA', borderRadius: 6 }}>
-                  <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 2 }}>{l}</div>
-                  <div style={{ fontSize: 13, color: '#1A1D23', fontWeight: 500 }}>{v || '—'}</div>
+            (() => {
+              const isDomestic = String(applicant.studentType || '').toUpperCase() === 'DOMESTIC';
+              const showSpouse = applicant.spouseName && String(applicant.maritalStatus || '').toLowerCase() !== 'single';
+              const showChildren = !!applicant.childrenInfo;
+              const universalRows = [
+                ['Full Name', `${applicant.firstName || ''} ${applicant.lastName || ''}`.trim()],
+                ['Email', applicant.email],
+                ['Phone', applicant.phone],
+                ['WhatsApp', applicant.whatsapp],
+                ['DOB', applicant.dob],
+                ['Gender', applicant.gender],
+                ['Place of Birth', applicant.placeOfBirth],
+                ['Nationality', applicant.nationality],
+                ['Mother Tongue', applicant.motherTongue],
+                ['Marital Status', applicant.maritalStatus],
+                ...(showSpouse  ? [['Spouse Name', applicant.spouseName]] : []),
+                ...(showChildren ? [['Children', applicant.childrenInfo]] : []),
+                ['Emergency Contact', applicant.emergencyContact],
+                ['Applied', applicant.createdAt ? new Date(applicant.createdAt).toLocaleDateString('en-IN') : ''],
+              ];
+              return (
+                <div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    {universalRows.map(([l,v]) => (
+                      <div key={l} style={{ padding: '8px 12px', background: '#F8F9FA', borderRadius: 6 }}>
+                        <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 2 }}>{l}</div>
+                        <div style={{ fontSize: 13, color: '#1A1D23', fontWeight: 500 }}>{valueOrDash(v)}</div>
+                      </div>
+                    ))}
+                    {applicant.referralCode && (
+                      <div style={{ padding: '8px 12px', background: '#FFFBF0', borderRadius: 6, border: '1px solid #F5E6BE', gridColumn: '1/-1' }}>
+                        <div style={{ fontSize: 11, color: '#92400E', marginBottom: 2 }}>Referral Code</div>
+                        <div style={{ fontSize: 13, color: '#92400E', fontWeight: 600 }}>{applicant.referralCode}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Address subsections branch on studentType. Domestic applicants
+                      supply present + permanent addresses; international supply
+                      country/city of residence + passport. */}
+                  {isDomestic ? (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A', margin: '20px 0 8px' }}>Present address</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {[
+                          ['Address', applicant.presentAddressLine],
+                          ['State', applicant.presentAddressState],
+                          ['Country', applicant.presentAddressCountry],
+                          ['PIN code', applicant.presentAddressPin],
+                        ].map(([l,v]) => (
+                          <div key={l} style={{ padding: '8px 12px', background: '#F8F9FA', borderRadius: 6 }}>
+                            <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 2 }}>{l}</div>
+                            <div style={{ fontSize: 13, color: '#1A1D23', fontWeight: 500 }}>{valueOrDash(v)}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A', margin: '16px 0 8px' }}>Permanent address</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {[
+                          ['Address', applicant.permanentAddressLine],
+                          ['State', applicant.permanentAddressState],
+                          ['Country', applicant.permanentAddressCountry],
+                          ['PIN code', applicant.permanentAddressPin],
+                        ].map(([l,v]) => (
+                          <div key={l} style={{ padding: '8px 12px', background: '#F8F9FA', borderRadius: 6 }}>
+                            <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 2 }}>{l}</div>
+                            <div style={{ fontSize: 13, color: '#1A1D23', fontWeight: 500 }}>{valueOrDash(v)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A', margin: '20px 0 8px' }}>Residence</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {[
+                          ['Country of residence', applicant.countryOfResidence],
+                          ['City of residence', applicant.cityOfResidence],
+                        ].map(([l,v]) => (
+                          <div key={l} style={{ padding: '8px 12px', background: '#F8F9FA', borderRadius: 6 }}>
+                            <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 2 }}>{l}</div>
+                            <div style={{ fontSize: 13, color: '#1A1D23', fontWeight: 500 }}>{valueOrDash(v)}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A', margin: '16px 0 8px' }}>Passport</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {[
+                          ['Number', applicant.passportNumber],
+                          ['Country of issue', applicant.passportCountryOfIssue],
+                        ].map(([l,v]) => (
+                          <div key={l} style={{ padding: '8px 12px', background: '#F8F9FA', borderRadius: 6 }}>
+                            <div style={{ fontSize: 11, color: '#7B8494', marginBottom: 2 }}>{l}</div>
+                            <div style={{ fontSize: 13, color: '#1A1D23', fontWeight: 500 }}>{valueOrDash(v)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
-              ))}
-              {applicant.referralCode && (
-                <div style={{ padding: '8px 12px', background: '#FFFBF0', borderRadius: 6, border: '1px solid #F5E6BE', gridColumn: '1/-1' }}>
-                  <div style={{ fontSize: 11, color: '#92400E', marginBottom: 2 }}>Referral Code</div>
-                  <div style={{ fontSize: 13, color: '#92400E', fontWeight: 600 }}>{applicant.referralCode}</div>
-                </div>
-              )}
-            </div>
+              );
+            })()
           )}
 
           {tab === 'docs' && (
-            <div>
-              {DOCS.map(d => {
-                const doc = applicant.documents?.find(x => x.docType === d.key);
+            // Phase 2's 14 docTypes are camelCase; pre-Phase-2 admin-uploaded
+            // docs use snake_case. We render whatever's in applicant.documents
+            // directly — no hardcoded vocabulary — and humanize the docType
+            // string for display. Signed-URL downloads land in Phase 2d.
+            (() => {
+              const docs = Array.isArray(applicant.documents) ? applicant.documents : [];
+              if (docs.length === 0) {
                 return (
-                  <div key={d.key} style={{ display: 'flex', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #DDE1E7' }}>
-                    <div style={{ flex: 1, fontSize: 13, color: '#3D4450' }}>{d.label}</div>
-                    {doc ? <Badge color={doc.verified ? 'green' : 'amber'}>{doc.verified ? 'Verified' : 'Received'}</Badge> : <Badge color="red">Missing</Badge>}
+                  <div style={{ padding: '20px 0', fontSize: 13, color: '#7B8494' }}>
+                    No documents uploaded.
                   </div>
                 );
-              })}
-            </div>
+              }
+              return (
+                <div>
+                  {docs.map(d => (
+                    <div key={d.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #DDE1E7', gap: 12 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, color: '#3D4450', fontWeight: 500 }}>
+                          {humanizeDocType(d.docType)}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#7B8494', marginTop: 2, wordBreak: 'break-all' }}>
+                          {valueOrDash(d.fileName)}
+                          {typeof d.fileSize === 'number' && d.fileSize > 0 ? ` · ${formatBytes(d.fileSize)}` : ''}
+                        </div>
+                      </div>
+                      <Badge color={d.verified ? 'green' : 'amber'}>{d.verified ? 'Verified' : 'Received'}</Badge>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()
           )}
 
           {tab === 'interview' && (
@@ -193,11 +323,86 @@ export default function ApplicantProfile({ applicant: initial, onClose, onUpdate
           )}
 
           {tab === 'academic' && (
-            <div style={{ fontSize: 13, color: '#5A6272' }}>
-              {applicant.academicBackground ? (
-                <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'DM Sans' }}>{JSON.stringify(applicant.academicBackground, null, 2)}</pre>
-              ) : <p>No academic information recorded.</p>}
-            </div>
+            // Renders from the JSON snapshot via flatten()'s educationEntries +
+            // languages keys; the relation tables (ApplicantEducation /
+            // ApplicantLanguage) are partially populated due to known write-side
+            // mismatches (yearOfPassing → yearOfCompletion, readWrite / speak /
+            // understand → canSpeak / canRead / canWrite + missing 'understand'
+            // column). Phase 2d cleans those up; until then we read the richer
+            // formData._public arrays as the source of truth.
+            (() => {
+              const edu = Array.isArray(applicant.educationEntries) ? applicant.educationEntries : [];
+              const lang = Array.isArray(applicant.languages) ? applicant.languages : [];
+              if (edu.length === 0 && lang.length === 0) {
+                return (
+                  <div style={{ padding: '20px 0', fontSize: 13, color: '#7B8494' }}>
+                    No academic information available.
+                  </div>
+                );
+              }
+              return (
+                <div>
+                  {edu.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A', margin: '0 0 10px' }}>Education ({edu.length})</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+                        {edu.map((e, i) => (
+                          <div key={e.id || i} style={{ background: '#F8F9FA', borderRadius: 8, padding: '12px 14px' }}>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: '#0F2B4A', marginBottom: 6 }}>
+                              {valueOrDash(e.qualification)}
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+                              <div>
+                                <div style={{ color: '#7B8494' }}>Institution</div>
+                                <div style={{ color: '#1A1D23' }}>{valueOrDash(e.institutionName)}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: '#7B8494' }}>Board / University</div>
+                                <div style={{ color: '#1A1D23' }}>{valueOrDash(e.boardOrUniversity)}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: '#7B8494' }}>Year of Passing</div>
+                                <div style={{ color: '#1A1D23' }}>{valueOrDash(e.yearOfPassing ?? e.yearOfCompletion)}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: '#7B8494' }}>Percentage / Grade</div>
+                                <div style={{ color: '#1A1D23' }}>{valueOrDash(e.percentageOrGrade)}</div>
+                              </div>
+                              <div style={{ gridColumn: '1/-1' }}>
+                                <div style={{ color: '#7B8494' }}>Language of Instruction</div>
+                                <div style={{ color: '#1A1D23' }}>{valueOrDash(e.languageOfInstruction)}</div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {lang.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0F2B4A', margin: '0 0 10px' }}>Languages ({lang.length})</div>
+                      <div style={{ background: '#F8F9FA', borderRadius: 8, overflow: 'hidden' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 0, padding: '8px 12px', background: '#EEF1F4', fontSize: 11, fontWeight: 600, color: '#5A6272', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                          <div>Language</div>
+                          <div>Read/Write</div>
+                          <div>Speak</div>
+                          <div>Understand</div>
+                        </div>
+                        {lang.map((l, i) => (
+                          <div key={l.id || i} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 0, padding: '10px 12px', borderTop: '1px solid #DDE1E7', fontSize: 13, color: '#1A1D23' }}>
+                            <div style={{ fontWeight: 500 }}>{valueOrDash(l.language)}</div>
+                            <div>{yesNoOrDash(l.readWrite)}</div>
+                            <div>{yesNoOrDash(l.speak)}</div>
+                            <div>{yesNoOrDash(l.understand)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()
           )}
 
           {tab === 'spiritual' && (

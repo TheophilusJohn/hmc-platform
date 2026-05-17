@@ -41,8 +41,24 @@ const admissionsAccess = requireRole('FULL_ADMIN', 'TEACHER_ADMIN', 'ADMISSIONS_
 // Flatten formData onto applicant for frontend convenience
 function flatten(a) {
   const fd = a.formData || {};
+  // Phase 2 stores the rich Step 1-6 form state under formData._public on submit
+  // (see server/src/routes/public.js flattenSnapshot). The detail view reads from
+  // there because the relation tables (ApplicantEducation, ApplicantLanguage)
+  // are partially populated for Phase 2 rows — known write-side field-name
+  // mismatches will be fixed under Phase 2d; until then _public is the
+  // higher-fidelity source for the structured arrays.
+  const pub = (fd && typeof fd._public === 'object' && fd._public) || {};
+  // Graceful degradation: if _public is missing or malformed (e.g. admin-
+  // created legacy rows that pre-date Phase 2), fall back to the relation
+  // tables included by GET /admissions/:id. List rows skip the include so
+  // their educationEntries / languages stay undefined → empty arrays.
+  const eduFromPublic  = Array.isArray(pub.educationEntries) ? pub.educationEntries : null;
+  const langFromPublic = Array.isArray(pub.languages)        ? pub.languages        : null;
+  const educationEntries = eduFromPublic  || (Array.isArray(a.educationEntries) ? a.educationEntries : []);
+  const languages        = langFromPublic || (Array.isArray(a.languages)        ? a.languages        : []);
   return {
     ...a,
+    // ── Legacy back-compat keys (admin views, list endpoint, accept flow) ───
     firstName: fd.firstName || '',
     lastName: fd.lastName || '',
     email: fd.email || '',
@@ -52,12 +68,45 @@ function flatten(a) {
     nationality: fd.nationality || '',
     maritalStatus: fd.maritalStatus || '',
     studyMode: fd.studyMode || '',
+    // Joined human-readable strings — used by older admin tables. Kept for
+    // the list view's compact rendering. The detail view consumes the
+    // individual columns below instead.
     permanentAddress: fd.permanentAddress || '',
     presentAddress: fd.presentAddress || '',
     statementOfFaith: fd.statementOfFaith || '',
     academicBackground: fd.academicBackground || null,
     programmeName: a.programme?.name || '',
     programmeCode: a.programme?.code || '',
+    // ── Phase 2 personal fields (sub-stage 2.5) ─────────────────────────────
+    // Source order: top-level Applicant column → formData snapshot. The column
+    // is canonical post-submit; formData is the snapshot at submit time.
+    whatsapp:          a.whatsapp          || fd.whatsapp          || '',
+    placeOfBirth:      a.placeOfBirth      || fd.placeOfBirth      || '',
+    motherTongue:      a.motherTongue      || fd.motherTongue      || '',
+    spouseName:        a.spouseName        || fd.spouseName        || '',
+    childrenInfo:      a.childrenInfo      || fd.childrenInfo      || '',
+    emergencyContact:  a.emergencyContact  || fd.emergencyContact  || '',
+    // Domestic-only structured addresses
+    presentAddressLine:      a.presentAddressLine      || fd.presentAddressLine      || '',
+    presentAddressState:     a.presentAddressState     || fd.presentAddressState     || '',
+    presentAddressCountry:   a.presentAddressCountry   || fd.presentAddressCountry   || '',
+    presentAddressPin:       a.presentAddressPin       || fd.presentAddressPin       || '',
+    permanentAddressLine:    a.permanentAddressLine    || fd.permanentAddressLine    || '',
+    permanentAddressState:   a.permanentAddressState   || fd.permanentAddressState   || '',
+    permanentAddressCountry: a.permanentAddressCountry || fd.permanentAddressCountry || '',
+    permanentAddressPin:     a.permanentAddressPin     || fd.permanentAddressPin     || '',
+    // International-only
+    countryOfResidence:     a.countryOfResidence     || fd.countryOfResidence     || '',
+    cityOfResidence:        a.cityOfResidence        || fd.cityOfResidence        || '',
+    passportNumber:         a.passportNumber         || fd.passportNumber         || '',
+    passportCountryOfIssue: a.passportCountryOfIssue || fd.passportCountryOfIssue || '',
+    // ── Structured arrays for Academic tab ──────────────────────────────────
+    // Sourced from formData._public (richer than the relation tables, which
+    // have known write-side mismatches — see Phase 2d backlog). Falls back
+    // to the relation tables for legacy / admin-created applicants whose
+    // formData lacks _public.
+    educationEntries,
+    languages,
   };
 }
 
@@ -240,6 +289,15 @@ router.get('/:id', authenticate, admissionsAccess, async (req, res, next) => {
         documents: true,
         references: true,
         interviewer: { include: { facultyProfile: true } },
+        // Phase 2 relation tables — included for forward-compatibility. The
+        // detail-view UI currently renders education + languages out of the
+        // formData._public JSON snapshot via flatten() because the relation
+        // tables are partially populated (write-side field-name mismatches
+        // surfaced during 2b-3 sub-stage 2.5 investigation — logged for the
+        // Phase 2d backlog). Once write-side is fixed + backfilled, the UI
+        // can rebase onto these arrays as the canonical source.
+        educationEntries: { orderBy: { sortOrder: 'asc' } },
+        languages: true,
       },
     });
     if (!applicant) return res.status(404).json({ error: 'Applicant not found' });
