@@ -76,6 +76,15 @@ pass should sweep all Phase 2 write paths for similar mismatches.
    If the detail-tier shape keeps growing, factor out a richer
    `flattenDetail()` so the list payload stays lean.
 
+## Endpoint consolidation
+
+After the `/status` extension in sub-stage 3 (Day 5), `/payment-status` is
+now a subset of `/status`. Consider deprecating `/payment-status` and
+migrating `ApplyPayment.jsx` to `/status` in a future cleanup. Both work
+currently; the smaller payment-status shape isn't wasteful, but maintaining
+two endpoints that return overlapping data is a maintenance burden the
+audit pass should evaluate.
+
 ## Pattern note for the fresh audit pass
 
 The write-side bugs above (#1–#3) share a single root cause: the FE

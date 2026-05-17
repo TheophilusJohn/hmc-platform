@@ -1110,7 +1110,15 @@ router.get('/applications/status', async (req, res, next) => {
         submittedAt: true,
         updatedAt: true,
         formData: true,
-        programme: { select: { name: true, code: true } },
+        studentType: true,
+        paymentStatus: true,
+        programme: {
+          select: {
+            name: true, code: true,
+            applicationFeeDomestic: true,
+            applicationFeeInternational: true,
+          },
+        },
       },
     });
     // Don't differentiate "not found" vs "wrong email" — same response either
@@ -1120,13 +1128,30 @@ router.get('/applications/status', async (req, res, next) => {
     const storedEmail = normEmail(a.formData?.email);
     if (!storedEmail || storedEmail !== normEmail(email)) return failGeneric();
 
+    // Derive payment + applicant fields — mirrors /payment-status. Computed
+    // AFTER the failGeneric checks so a wrong-email caller can never observe
+    // these values (preserving the anti-enumeration property).
+    const isIntl = a.studentType === 'INTERNATIONAL';
+    const feeDec = isIntl
+      ? a.programme?.applicationFeeInternational
+      : a.programme?.applicationFeeDomestic;
+    const paymentAmount   = feeDec != null ? feeDec.toString() : null;
+    const paymentCurrency = isIntl ? 'USD' : 'INR';
+    const firstName = String(a.formData?.firstName || '').trim();
+    const lastName  = String(a.formData?.lastName  || '').trim();
+    const applicantName = [firstName, lastName].filter(Boolean).join(' ');
+
     res.json({
       applicationNo: a.applicationNo,
+      applicantName,
       programmeName: a.programme?.name || '',
       programmeCode: a.programme?.code || '',
       status: a.pipelineStage,
       submittedAt: a.submittedAt,
       lastUpdate: a.updatedAt,
+      paymentStatus: a.paymentStatus || 'PENDING',
+      paymentAmount,
+      paymentCurrency,
     });
   } catch (err) { next(err); }
 });

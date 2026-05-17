@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { useForm, useFieldArray } from 'react-hook-form';
 import api from '../../utils/api';
+import { LS_CODE, LS_EMAIL } from '../../utils/applyDraftStorage';
 import { Btn } from '../../components/common';
 
 const NAVY = '#0F2B4A';
@@ -25,9 +26,6 @@ const GOLD = '#C9920A';
 const NAVY_BG = '#EEF4FA';
 const GRAY_500 = '#7B8494';
 const GRAY_600 = '#5A6272';
-
-const LS_CODE = 'hmc_apply_draft_code';
-const LS_EMAIL = 'hmc_apply_draft_email';
 
 // Steps the user sees in the indicator (skipping the intro screen, which is
 // rendered before the first real step). Labels chosen to match the field
