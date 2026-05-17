@@ -843,7 +843,6 @@ function FormFooter({ onBack, saving }) {
 // PARENT — orchestrates the state machine, draft persistence, geo + programmes
 // ──────────────────────────────────────────────────────────────────────────────
 export default function ApplyStart() {
-  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const programmeCode = (params.get('programme') || '').toUpperCase() || null;
   const draftFromUrl = params.get('draft') || null;
