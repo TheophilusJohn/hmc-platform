@@ -41,6 +41,58 @@ const STEPS = [
   { id: 6, label: 'Documents' },
 ];
 
+// Document checklist shown on Step 6. Keys are the camelCase docTypes that
+// the backend's DOC_TYPES + DOC_RULES allowlist accepts (server/routes/public.js).
+// `requiresProgrammes` hides a row unless the applicant chose one of the listed
+// programme codes — used for bachelor's mark-sheet / transcript which only
+// master's applicants (MDIV, MDIV-UP) need to supply.
+const DOCUMENT_SPECS = (() => {
+  const RULES = {
+    pdfOrImage10MB: {
+      accept: '.pdf,.jpg,.jpeg,.png',
+      mimeTypes: ['application/pdf', 'image/jpeg', 'image/png'],
+      maxBytes: 10 * 1024 * 1024,
+      helper: 'PDF/JPEG/PNG · max 10MB',
+    },
+    pdfOnly10MB: {
+      accept: '.pdf',
+      mimeTypes: ['application/pdf'],
+      maxBytes: 10 * 1024 * 1024,
+      helper: 'PDF only · max 10MB',
+    },
+    photo5MB: {
+      accept: '.jpg,.jpeg,.png',
+      mimeTypes: ['image/jpeg', 'image/png'],
+      maxBytes: 5 * 1024 * 1024,
+      helper: 'JPEG/PNG · max 5MB',
+    },
+  };
+  const SHARED = [
+    { docType: 'photo',               label: 'Passport-size photo',     required: true, ...RULES.photo5MB },
+    { docType: 'birthCertificate',    label: 'Birth certificate',       required: true, ...RULES.pdfOrImage10MB },
+    { docType: 'baptismCertificate',  label: 'Baptism certificate',     required: true, ...RULES.pdfOrImage10MB },
+    { docType: 'pastorReference',     label: 'Pastor reference letter', required: true, ...RULES.pdfOnly10MB, helperExtra: 'Signed letter from your pastor' },
+    { docType: 'characterReference1', label: 'Character reference #1',  required: true, ...RULES.pdfOnly10MB, helperExtra: 'Signed letter from a Christian leader (not family)' },
+    { docType: 'characterReference2', label: 'Character reference #2',  required: true, ...RULES.pdfOnly10MB, helperExtra: 'Signed letter from a second Christian leader' },
+  ];
+  return {
+    DOMESTIC: [
+      ...SHARED,
+      { docType: 'tenthMarkSheet',     label: '10th mark sheet',                     required: true, ...RULES.pdfOrImage10MB },
+      { docType: 'twelfthMarkSheet',   label: '12th mark sheet',                     required: true, ...RULES.pdfOrImage10MB },
+      { docType: 'bachelorsMarkSheet', label: "Bachelor's mark sheet",               required: true, ...RULES.pdfOrImage10MB, requiresProgrammes: ['MDIV', 'MDIV-UP'] },
+      { docType: 'idProof',            label: 'Aadhaar card or passport (ID proof)', required: true, ...RULES.pdfOrImage10MB },
+    ],
+    INTERNATIONAL: [
+      ...SHARED,
+      { docType: 'highestQualificationTranscripts', label: 'Highest-qualification transcripts',                required: true,  ...RULES.pdfOrImage10MB },
+      { docType: 'bachelorsTranscript',             label: "Bachelor's transcript",                            required: true,  ...RULES.pdfOrImage10MB, requiresProgrammes: ['MDIV', 'MDIV-UP'] },
+      { docType: 'passportCopy',                    label: 'Passport copy',                                    required: true,  ...RULES.pdfOrImage10MB },
+      { docType: 'englishProficiency',              label: 'English proficiency proof (TOEFL/IELTS/Duolingo)', required: false, ...RULES.pdfOrImage10MB, helperExtra: 'Optional — recommended for non-native English speakers' },
+    ],
+  };
+})();
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Layout shell (logo header + container) shared across every screen of the form
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1506,6 +1558,256 @@ function Step5Financial({ applicantType, initialValues, onNext, onBack, saving }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// STEP 6 — Documents. Per-row file pickers with client-side MIME+size guards.
+// Each successful upload talks to the per-docType endpoint and bumps the parent's
+// formData.documents map via onDocumentChange so Back → Forward survives without
+// losing files (and a hard refresh re-hydrates from the same server-side state).
+// ──────────────────────────────────────────────────────────────────────────────
+function Step6Documents({ applicantType, programmeCode, draftCode, email, initialValues, onDocumentChange, onNext, onBack, saving }) {
+  const visibleSpecs = useMemo(() => {
+    const all = DOCUMENT_SPECS[applicantType] || DOCUMENT_SPECS.DOMESTIC;
+    return all.filter(s => !s.requiresProgrammes || s.requiresProgrammes.includes(programmeCode));
+  }, [applicantType, programmeCode]);
+
+  // Per-row status: 'empty' | 'uploading' | 'uploaded' | 'error'.
+  // Hydrate from initialValues.documents so refresh/back-forward preserves UI.
+  const [rowState, setRowState] = useState(() => {
+    const map = {};
+    const existing = (initialValues && initialValues.documents) || {};
+    for (const spec of visibleSpecs) {
+      const e = existing[spec.docType];
+      map[spec.docType] = e
+        ? { status: 'uploaded', fileName: e.fileName, fileSize: e.fileSize, mimeType: e.mimeType, objectKey: e.objectKey, uploadedAt: e.uploadedAt }
+        : { status: 'empty' };
+    }
+    return map;
+  });
+  const [formError, setFormError] = useState(null);
+  const [busyAny, setBusyAny] = useState(false);
+
+  const setRow = (docType, patch) =>
+    setRowState(prev => ({ ...prev, [docType]: { ...(prev[docType] || {}), ...patch } }));
+
+  const handleFileSelect = async (spec, file) => {
+    if (!file) return;
+    setFormError(null);
+    // Client-side pre-validation — saves a wasted upload round-trip on
+    // obvious mismatches. The server re-validates either way.
+    if (file.size > spec.maxBytes) {
+      setRow(spec.docType, { status: 'error', errorMessage: `File exceeds ${Math.round(spec.maxBytes / (1024 * 1024))}MB cap` });
+      return;
+    }
+    const mime = String(file.type || '').toLowerCase().split(';')[0].trim();
+    if (!spec.mimeTypes.includes(mime)) {
+      setRow(spec.docType, { status: 'error', errorMessage: `Wrong file type. ${spec.helper}.` });
+      return;
+    }
+    setRow(spec.docType, { status: 'uploading', errorMessage: null });
+    setBusyAny(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('email', email);
+      const { data } = await api.post(
+        `/public/applications/draft/${encodeURIComponent(draftCode)}/documents/${encodeURIComponent(spec.docType)}`,
+        fd,
+      );
+      const slot = data.document || {};
+      setRow(spec.docType, {
+        status: 'uploaded',
+        fileName: slot.fileName, fileSize: slot.fileSize, mimeType: slot.mimeType,
+        objectKey: slot.objectKey, uploadedAt: slot.uploadedAt, errorMessage: null,
+      });
+      onDocumentChange(spec.docType, slot);
+    } catch (err) {
+      setRow(spec.docType, { status: 'error', errorMessage: err?.response?.data?.error || 'Upload failed. Please try again.' });
+    } finally {
+      setBusyAny(false);
+    }
+  };
+
+  const handleRemove = async (spec) => {
+    setFormError(null);
+    setRow(spec.docType, { status: 'uploading', errorMessage: null });
+    setBusyAny(true);
+    try {
+      await api.delete(
+        `/public/applications/draft/${encodeURIComponent(draftCode)}/documents/${encodeURIComponent(spec.docType)}`,
+        { data: { email } },
+      );
+      setRow(spec.docType, {
+        status: 'empty',
+        fileName: null, fileSize: null, mimeType: null, objectKey: null, uploadedAt: null, errorMessage: null,
+      });
+      onDocumentChange(spec.docType, null);
+    } catch (err) {
+      setRow(spec.docType, { status: 'error', errorMessage: err?.response?.data?.error || 'Remove failed. Please try again.' });
+    } finally {
+      setBusyAny(false);
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setFormError(null);
+    const missing = visibleSpecs.filter(s => s.required && rowState[s.docType]?.status !== 'uploaded');
+    if (missing.length > 0) {
+      setFormError(`Please upload all required documents: ${missing.map(m => m.label).join(', ')}.`);
+      return;
+    }
+    // Mirror the latest documents map back through the parent's formData on
+    // Save & Continue. The server is already authoritative (each upload/delete
+    // writes draft.formData.documents), but threading it through onNext keeps
+    // parent state in sync without an extra GET.
+    const out = {};
+    for (const spec of visibleSpecs) {
+      const r = rowState[spec.docType];
+      if (r && r.status === 'uploaded' && r.objectKey) {
+        out[spec.docType] = {
+          docType: spec.docType,
+          objectKey: r.objectKey,
+          fileName: r.fileName,
+          fileSize: r.fileSize,
+          mimeType: r.mimeType,
+          uploadedAt: r.uploadedAt,
+        };
+      }
+    }
+    // targetStep: 7 explicitly bypasses handleNext's STEPS.length cap so we
+    // advance past Step 6 to the post-step placeholder (Application Summary
+    // lands in Stage 2b-3).
+    onNext({ documents: out }, { targetStep: 7 });
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, color: NAVY, margin: '0 0 8px' }}>
+        Documents
+      </h2>
+      <p style={{ color: GRAY_600, fontSize: 13, margin: '0 0 20px', lineHeight: 1.6 }}>
+        Upload the documents below. PDFs are preferred where possible. Each row accepts a single
+        file; uploading again replaces the previous one. Required documents are marked
+        <span style={{ color: '#991B1B', margin: '0 4px' }}>*</span>.
+      </p>
+
+      {formError && (
+        <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
+          {formError}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {visibleSpecs.map(spec => (
+          <DocumentRow
+            key={spec.docType}
+            spec={spec}
+            state={rowState[spec.docType] || { status: 'empty' }}
+            disabled={busyAny || saving}
+            onSelect={(file) => handleFileSelect(spec, file)}
+            onRemove={() => handleRemove(spec)}
+          />
+        ))}
+      </div>
+
+      <FormFooter onNext={true} onBack={onBack} saving={saving || busyAny} />
+    </form>
+  );
+}
+
+function DocumentRow({ spec, state, disabled, onSelect, onRemove }) {
+  const inputId = `doc-${spec.docType}`;
+  const isUploaded = state.status === 'uploaded';
+  const isUploading = state.status === 'uploading';
+  const isError = state.status === 'error';
+
+  const onPick = (e) => {
+    const f = e.target.files?.[0];
+    // Clear the input so picking the same filename twice still fires onChange.
+    e.target.value = '';
+    if (f) onSelect(f);
+  };
+
+  return (
+    <div style={{ border: '1px solid #DDE1E7', background: '#fff', borderRadius: 10, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 600, color: NAVY, fontSize: 14 }}>
+            {spec.label}
+            {spec.required
+              ? <span style={{ color: '#991B1B', marginLeft: 4 }}>*</span>
+              : <span style={{ color: GRAY_500, fontSize: 12, marginLeft: 6 }}>(optional)</span>
+            }
+          </div>
+          <div style={{ color: GRAY_500, fontSize: 12, marginTop: 2 }}>
+            {spec.helper}{spec.helperExtra ? ` · ${spec.helperExtra}` : ''}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        {isUploaded ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', color: '#166534', padding: '4px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600 }}>
+              ✓ Uploaded
+            </span>
+            <span style={{ color: GRAY_600, fontSize: 13, wordBreak: 'break-all' }}>
+              {state.fileName || 'file'}
+              {typeof state.fileSize === 'number' && state.fileSize > 0 ? ` · ${formatBytes(state.fileSize)}` : ''}
+            </span>
+            <label htmlFor={inputId} style={{ marginLeft: 'auto' }}>
+              <input id={inputId} type="file" accept={spec.accept} style={{ display: 'none' }}
+                disabled={disabled} onChange={onPick} />
+              <span style={{
+                display: 'inline-block', padding: '6px 12px', border: '1px solid #DDE1E7',
+                borderRadius: 8, fontSize: 12, color: NAVY, background: '#fff',
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
+              }}>
+                Replace
+              </span>
+            </label>
+            <button type="button" disabled={disabled} onClick={onRemove}
+              style={{
+                padding: '6px 12px', border: '1px solid #FECACA', background: '#fff',
+                color: '#991B1B', borderRadius: 8, fontSize: 12,
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
+              }}>
+              Remove
+            </button>
+          </div>
+        ) : isUploading ? (
+          <div style={{ color: GRAY_500, fontSize: 13 }}>Working…</div>
+        ) : (
+          <label htmlFor={inputId} style={{ display: 'inline-block' }}>
+            <input id={inputId} type="file" accept={spec.accept} style={{ display: 'none' }}
+              disabled={disabled} onChange={onPick} />
+            <span style={{
+              display: 'inline-block', padding: '8px 14px', background: NAVY, color: '#fff',
+              borderRadius: 8, fontSize: 13,
+              cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
+            }}>
+              Choose file
+            </span>
+          </label>
+        )}
+
+        {isError && (
+          <div style={{ marginTop: 8, padding: '8px 12px', background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', borderRadius: 6, fontSize: 12 }}>
+            {state.errorMessage}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Footer with Back/Next + Save indicator. Used by every step.
 // ──────────────────────────────────────────────────────────────────────────────
 function FormFooter({ onBack, saving }) {
@@ -1686,6 +1988,21 @@ export default function ApplyStart() {
     if (currentStep > 1) setCurrentStep(currentStep - 1);
   };
 
+  // Keep parent.formData.documents in sync after each upload/delete on Step 6.
+  // The server endpoint already writes draft.formData.documents on every
+  // upload/delete, so this is purely a local mirror — no PUT needed. Without
+  // it, navigating Step 6 → Back → forward would re-mount Step 6 with stale
+  // initialValues.documents and lose the just-uploaded files visually until
+  // the next full hydration.
+  const handleDocumentChange = (docType, slot) => {
+    setFormData(prev => {
+      const docs = { ...((prev && prev.documents) || {}) };
+      if (slot) docs[docType] = slot;
+      else delete docs[docType];
+      return { ...prev, documents: docs };
+    });
+  };
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   if (loading || (currentStep > 0 && !applicantType)) {
@@ -1770,23 +2087,35 @@ export default function ApplyStart() {
         />
       )}
 
-      {currentStep >= 6 && (
-        // Step 6 (documents) lands in stage 2b-2 part B. For now, this card
-        // explains the gap and preserves the applicant's draft code so they
-        // can return when document upload ships.
+      {currentStep === 6 && (
+        <Step6Documents
+          applicantType={applicantType}
+          programmeCode={formData.programmeCode || programmeCode}
+          draftCode={draftCode}
+          email={email}
+          initialValues={formData}
+          onDocumentChange={handleDocumentChange}
+          onNext={handleNext}
+          onBack={handleBack}
+          saving={saving}
+        />
+      )}
+
+      {currentStep >= 7 && (
+        // Step 6 (documents) is complete. The Application Summary screen with
+        // declarations + first-fees reveal + submit lands in Stage 2b-3.
         <div style={{ padding: 32, background: '#fff', border: '1px solid #DDE1E7', borderRadius: 12, textAlign: 'center' }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>🚧</div>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>✅</div>
           <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, color: NAVY, margin: '0 0 8px' }}>
-            Step 6 (documents) is launching shortly
+            Step 6 of 6 complete
           </h2>
           <p style={{ color: GRAY_600, fontSize: 14, margin: '0 0 16px' }}>
-            Your application has been saved through Step 5. The document upload step is
-            rolling out in the next day or two. We'll email you at <strong>{email}</strong>{' '}
+            Application Summary screen launching shortly. We'll email you at <strong>{email}</strong>{' '}
             when it's ready, or use your code{' '}
             <code style={{ background: NAVY_BG, padding: '2px 8px', borderRadius: 4 }}>{draftCode}</code>{' '}
             to return here.
           </p>
-          <Btn variant="outline" onClick={handleBack}>← Back to Step 5</Btn>
+          <Btn variant="outline" onClick={() => setCurrentStep(6)}>← Back to Step 6</Btn>
         </div>
       )}
 

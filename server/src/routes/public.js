@@ -121,19 +121,81 @@ function pickForm(raw) {
   return out;
 }
 
-const DOC_TYPES = new Set(['PHOTO', 'TRANSCRIPT', 'MARKSHEET', 'REFERENCE_PASTORAL', 'REFERENCE_LEADER', 'PASSPORT_COPY']);
+// Document vocabulary — 14 camelCase keys covering the full public-form
+// document checklist (shared + domestic-only + international-only). Replaces
+// the 6 uppercase placeholders from Phase 2a; the new keys match the FE
+// DOCUMENT_SPECS map exactly so there is one vocabulary across FE + BE.
+//
+// Per-docType caps:
+//   - photo                       — 5MB, JPEG/PNG only
+//   - pastorReference, character* — 10MB, PDF only (signed letters)
+//   - everything else             — 10MB, PDF/JPEG/PNG
+// (Multer's outer cap is 12MB; per-docType rules narrow it below.)
+const PDF_OR_IMAGE = ['application/pdf', 'image/jpeg', 'image/png'];
+const PDF_ONLY     = ['application/pdf'];
+const PHOTO_ONLY   = ['image/jpeg', 'image/png'];
+const MB10 = 10 * 1024 * 1024;
+const MB5  = 5  * 1024 * 1024;
 
-// Per-docType file caps. PHOTO is a strict 5MB JPEG/PNG only. Everything else
-// is 10MB image/* or PDF. (Multer's outer cap is 12MB; the per-doctype rules
-// override below.)
 const DOC_RULES = {
-  PHOTO:              { maxBytes: 5 * 1024 * 1024,  allowed: ['image/jpeg', 'image/png'] },
-  TRANSCRIPT:         { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
-  MARKSHEET:          { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
-  REFERENCE_PASTORAL: { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
-  REFERENCE_LEADER:   { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
-  PASSPORT_COPY:      { maxBytes: 10 * 1024 * 1024, allowed: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] },
+  // shared across DOMESTIC + INTERNATIONAL
+  photo:                            { maxBytes: MB5,  allowed: PHOTO_ONLY },
+  birthCertificate:                 { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  baptismCertificate:               { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  pastorReference:                  { maxBytes: MB10, allowed: PDF_ONLY },
+  characterReference1:              { maxBytes: MB10, allowed: PDF_ONLY },
+  characterReference2:              { maxBytes: MB10, allowed: PDF_ONLY },
+  // domestic-only
+  tenthMarkSheet:                   { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  twelfthMarkSheet:                 { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  bachelorsMarkSheet:               { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  idProof:                          { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  // international-only
+  highestQualificationTranscripts:  { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  bachelorsTranscript:              { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  passportCopy:                     { maxBytes: MB10, allowed: PDF_OR_IMAGE },
+  englishProficiency:               { maxBytes: MB10, allowed: PDF_OR_IMAGE },
 };
+const DOC_TYPES = new Set(Object.keys(DOC_RULES));
+
+// Filename sanitizer for MinIO object keys. The caller-supplied originalname
+// can contain anything; we tame it before composing the object path. Rules:
+//   1. strip control characters and other non-printable bytes
+//   2. strip path separators (/, \)
+//   3. strip ".." sequences (path-traversal token in filesystems)
+//   4. collapse whitespace runs to a single underscore
+//   5. anything left outside [A-Za-z0-9._-] → underscore
+//   6. collapse repeated underscores
+//   7. trim leading/trailing dots/underscores
+//   8. preserve extension if present (≤8 chars after the last dot)
+//   9. cap total length at ~100 chars
+//  10. fallback to "file" if sanitization leaves nothing usable
+function sanitizeFilename(input) {
+  let s = (typeof input === 'string') ? input : '';
+  s = s.replace(/[\x00-\x1F\x7F-\x9F]/g, '');     // control chars
+  s = s.replace(/[\\\/]/g, '_');                  // path separators
+  s = s.replace(/\.\./g, '_');                    // traversal token
+  s = s.replace(/\s+/g, '_');                     // whitespace runs
+  s = s.replace(/[^A-Za-z0-9._-]/g, '_');         // anything else
+  s = s.replace(/_+/g, '_');                      // collapse repeats
+  s = s.replace(/^[._]+|[._]+$/g, '');            // trim edges
+
+  const dot = s.lastIndexOf('.');
+  let base, ext;
+  if (dot > 0 && dot < s.length - 1 && s.length - dot - 1 <= 8) {
+    base = s.slice(0, dot);
+    ext  = s.slice(dot);
+  } else {
+    base = s;
+    ext  = '';
+  }
+  const MAX = 100;
+  if (base.length + ext.length > MAX) base = base.slice(0, MAX - ext.length);
+
+  if (!base && !ext) return 'file';
+  if (!base)         return 'file' + ext;
+  return base + ext;
+}
 
 // Day windows for the draft TTL. Bumped on every PUT.
 const DRAFT_TTL_DAYS = 30;
@@ -480,17 +542,18 @@ router.put('/applications/draft/:code', async (req, res, next) => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// POST /api/public/applications/draft/:code/documents  (multipart)
-// fields:  email, docType
+// POST /api/public/applications/draft/:code/documents/:docType  (multipart)
+// fields:  email
 // file:    file
+// Path-form mirrors the DELETE route so FE and BE share one URL shape per slot.
 // ──────────────────────────────────────────────────────────────────────────────
-router.post('/applications/draft/:code/documents', upload.single('file'), async (req, res, next) => {
+router.post('/applications/draft/:code/documents/:docType', upload.single('file'), async (req, res, next) => {
   try {
-    const { email, docType } = req.body || {};
+    const { email } = req.body || {};
     const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
     if (error) return res.status(status).json({ error });
 
-    const dt = String(docType || '').toUpperCase();
+    const dt = String(req.params.docType || '');
     if (!DOC_TYPES.has(dt)) {
       return res.status(400).json({ error: `docType must be one of: ${[...DOC_TYPES].join(', ')}` });
     }
@@ -506,12 +569,13 @@ router.post('/applications/draft/:code/documents', upload.single('file'), async 
     }
 
     // Safe object path: applicants/{code}/{docType}/{ts}-{sanitized-name}.
-    // sanitizeObjectPath inside minio.service will strip anything dodgy from
-    // the filename component; we still pre-sanitize so the timestamp prefix
-    // survives intact.
+    // sanitizeFilename strips path separators, "..", control chars, collapses
+    // whitespace, caps at ~100 chars, preserves the extension, and falls back
+    // to "file" if nothing usable survives. sanitizeObjectPath inside
+    // minio.service runs again as a defence-in-depth pass.
     const ts = Date.now();
-    const rawName = String(req.file.originalname || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(-80);
-    const objectPath = `applicants/${draft.code}/${dt}/${ts}-${rawName}`;
+    const safeName = sanitizeFilename(req.file.originalname);
+    const objectPath = `applicants/${draft.code}/${dt}/${ts}-${safeName}`;
 
     // If a previous upload exists for this docType, delete it from MinIO before
     // overwriting the formData slot — keeps the bucket from accumulating orphans.
@@ -531,7 +595,7 @@ router.post('/applications/draft/:code/documents', upload.single('file'), async 
     const slot = {
       docType: dt,
       objectKey: storedKey,
-      fileName: req.file.originalname || rawName,
+      fileName: req.file.originalname || safeName,
       fileSize: req.file.size,
       mimeType: mime,
       uploadedAt: new Date().toISOString(),
@@ -558,7 +622,7 @@ router.delete('/applications/draft/:code/documents/:docType', async (req, res, n
     const { email } = req.body || {};
     const { draft, error, status } = await loadDraftForAccess(req.params.code, email);
     if (error) return res.status(status).json({ error });
-    const dt = String(req.params.docType || '').toUpperCase();
+    const dt = String(req.params.docType || '');
     if (!DOC_TYPES.has(dt)) {
       return res.status(400).json({ error: `docType must be one of: ${[...DOC_TYPES].join(', ')}` });
     }
