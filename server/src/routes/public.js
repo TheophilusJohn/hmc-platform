@@ -237,7 +237,7 @@ router.get('/geo', (req, res) => {
 // ──────────────────────────────────────────────────────────────────────────────
 router.post('/applications/start', writeLimiter, async (req, res, next) => {
   try {
-    const { email, phone, studentType, programmeCode } = req.body || {};
+    const { email, phone, studentType, programmeCode, force } = req.body || {};
     if (!isEmail(email)) return res.status(400).json({ error: 'A valid email is required' });
     const st = String(studentType || '').toLowerCase();
     if (st !== 'domestic' && st !== 'international') {
@@ -259,6 +259,83 @@ router.post('/applications/start', writeLimiter, async (req, res, next) => {
       return res.status(400).json({
         error: 'Application type does not match your detected location. If you believe this is incorrect, please contact admissions@hmc.college.',
       });
+    }
+
+    // ── Multiple-applications-per-email choice point (leadership Option B) ────
+    // Applicants ARE allowed to apply for multiple programmes, but the system
+    // must surface the existing application(s) and make the user choose,
+    // rather than silently create a duplicate draft on the same email.
+    //
+    // `force: true` in the body skips this check — that's the FE telling us
+    // the user clicked "Start a NEW application" on the choice screen after
+    // seeing their existing applications.
+    if (force !== true) {
+      const lowerEmail = normEmail(email);
+      const [activeDrafts, candidateApplicants] = await Promise.all([
+        prisma.applicantDraft.findMany({
+          where: {
+            email: lowerEmail,
+            expiresAt: { gt: new Date() },
+            // "Not yet submitted" = no Applicant row references this draft.
+            applicant: { is: null },
+          },
+          select: {
+            code: true, programmeCode: true, currentStep: true,
+            updatedAt: true, expiresAt: true,
+          },
+          orderBy: { updatedAt: 'desc' },
+        }),
+        // formData.email is stored as-typed on Applicant (the draft.email
+        // column is normalized at start, but the JSON snapshot is not). We
+        // filter where the JSON key exists, then case-insensitive match in
+        // JS — fine for HMC's applicant volume; a raw-SQL `LOWER()` query is
+        // the upgrade path if volumes grow.
+        prisma.applicant.findMany({
+          where: { formData: { path: ['email'], not: null } },
+          select: {
+            applicationNo: true, programmeCode: true,
+            pipelineStage: true, submittedAt: true, formData: true,
+          },
+        }),
+      ]);
+      const submittedApplications = candidateApplicants
+        .filter(a => String(a.formData?.email || '').toLowerCase() === lowerEmail)
+        .map(({ formData: _f, ...rest }) => rest);
+
+      if (activeDrafts.length > 0 || submittedApplications.length > 0) {
+        // Single Programme batch lookup so the FE can render human-readable names.
+        const codes = new Set([
+          ...activeDrafts.map(d => d.programmeCode).filter(Boolean),
+          ...submittedApplications.map(a => a.programmeCode).filter(Boolean),
+        ]);
+        const progs = codes.size
+          ? await prisma.programme.findMany({
+              where: { code: { in: [...codes] } },
+              select: { code: true, name: true },
+            })
+          : [];
+        const nameByCode = Object.fromEntries(progs.map(p => [p.code, p.name]));
+
+        return res.status(409).json({
+          error: 'EXISTING_APPLICATIONS',
+          message: 'This email has existing applications. Please choose how to proceed.',
+          activeDrafts: activeDrafts.map(d => ({
+            code: d.code,
+            programmeCode: d.programmeCode,
+            programmeName: d.programmeCode ? (nameByCode[d.programmeCode] || d.programmeCode) : null,
+            currentStep: d.currentStep,
+            updatedAt: d.updatedAt,
+            expiresAt: d.expiresAt,
+          })),
+          submittedApplications: submittedApplications.map(a => ({
+            applicationNo: a.applicationNo,
+            programmeCode: a.programmeCode,
+            programmeName: a.programmeCode ? (nameByCode[a.programmeCode] || a.programmeCode) : null,
+            pipelineStage: a.pipelineStage,
+            submittedAt: a.submittedAt,
+          })),
+        });
+      }
     }
     if (phone !== undefined && phone !== null && phone !== '' && typeof phone !== 'string') {
       return res.status(400).json({ error: 'phone must be a string' });

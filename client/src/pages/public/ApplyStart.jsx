@@ -14,11 +14,11 @@
 //   - URL deliberately does NOT carry an applicant type — geo is the single
 //     source of truth and the server re-checks at /start
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import api from '../../utils/api';
-import { Btn, Input, Select } from '../../components/common';
+import { Btn } from '../../components/common';
 
 const NAVY = '#0F2B4A';
 const GOLD = '#C9920A';
@@ -154,55 +154,223 @@ function isAgeAtLeast(dob, minYears) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// CHOICE SCREEN — shown when POST /applications/start returns 409
+// EXISTING_APPLICATIONS. Lists the applicant's active drafts and submitted
+// applications and lets them pick "Continue", "Check status", or
+// "Start NEW" (which re-POSTs with force: true).
+// ──────────────────────────────────────────────────────────────────────────────
+function ExistingApplicationsChoice({ choice, newProgrammeName, submitting, onResume, onForceNew, onCancel }) {
+  const drafts = Array.isArray(choice.activeDrafts) ? choice.activeDrafts : [];
+  const submitted = Array.isArray(choice.submittedApplications) ? choice.submittedApplications : [];
+  const fmtDate = (v) => {
+    if (!v) return '';
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  };
+  return (
+    <div>
+      <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 24, color: NAVY, margin: '0 0 8px' }}>
+        You already have applications under this email
+      </h1>
+      <p style={{ color: GRAY_600, fontSize: 14, lineHeight: 1.6, margin: '0 0 24px' }}>
+        {choice.message || 'This email has existing applications. Please choose how to proceed.'}
+      </p>
+
+      {drafts.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: NAVY, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+            In-progress drafts
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {drafts.map(d => (
+              <div key={d.code} style={{ background: '#fff', border: '1px solid #DDE1E7', borderRadius: 10, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: NAVY }}>
+                    {d.programmeName || 'Programme not yet selected'}
+                  </div>
+                  <div style={{ fontSize: 12, color: GRAY_600, marginTop: 2 }}>
+                    Code <code style={{ background: NAVY_BG, padding: '1px 6px', borderRadius: 4 }}>{d.code}</code> ·{' '}
+                    Step {d.currentStep || 1} · Last saved {fmtDate(d.updatedAt)}
+                  </div>
+                </div>
+                <Btn size="sm" disabled={submitting} onClick={() => onResume(d.code)}>Continue →</Btn>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {submitted.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: NAVY, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+            Already submitted
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {submitted.map(a => (
+              <div key={a.applicationNo} style={{ background: '#fff', border: '1px solid #DDE1E7', borderRadius: 10, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: NAVY }}>
+                    {a.programmeName || a.programmeCode || 'Programme unknown'}
+                  </div>
+                  <div style={{ fontSize: 12, color: GRAY_600, marginTop: 2 }}>
+                    Application <code style={{ background: NAVY_BG, padding: '1px 6px', borderRadius: 4 }}>{a.applicationNo}</code> ·{' '}
+                    Stage <strong>{String(a.pipelineStage || '').toLowerCase().replace(/_/g, ' ')}</strong> ·{' '}
+                    Submitted {fmtDate(a.submittedAt)}
+                  </div>
+                </div>
+                {/* /apply/status is a placeholder for now; the real lookup screen
+                    lands in stage 2b-3. The link still works because the route
+                    is registered in App.jsx. */}
+                <Link to={`/apply/status?applicationNo=${encodeURIComponent(a.applicationNo)}`}
+                  style={{ fontSize: 13, color: GOLD, fontWeight: 600, textDecoration: 'none', padding: '6px 12px', border: `1.5px solid ${GOLD}`, borderRadius: 8 }}>
+                  Check status
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ padding: '16px 18px', background: NAVY_BG, borderRadius: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 14, color: NAVY, marginBottom: 10 }}>
+          Apply for a different programme — this creates a separate application alongside the ones above.
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <Btn disabled={submitting} onClick={onForceNew}>
+            {submitting
+              ? 'Starting…'
+              : newProgrammeName
+                ? `Start a NEW application for ${newProgrammeName} →`
+                : 'Start a NEW application →'}
+          </Btn>
+          <Btn variant="outline" disabled={submitting} onClick={onCancel}>Cancel</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // STEP 0 — intro / get started
 // Collects email + mobile, then POSTs /applications/start. Server runs geo
 // enforcement; a "type does not match location" error surfaces inline.
+//
+// If the server returns 409 EXISTING_APPLICATIONS, the form is replaced by an
+// in-place choice screen (Bug 2 fix). RHF hook state survives the swap because
+// useForm lives on this component — only the JSX changes. Clicking Cancel
+// brings the user back to the form with email/mobile preserved.
 // ──────────────────────────────────────────────────────────────────────────────
-function StepIntro({ applicantType, programmeCode, onStarted }) {
-  const { register, handleSubmit, formState: { errors } } = useForm({
+function StepIntro({ applicantType, programmes, programmeCode, onStarted, onResumeDraft }) {
+  const { register, handleSubmit, getValues, formState: { errors } } = useForm({
     defaultValues: { email: '', mobile: '' },
   });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // 409 payload (or null). When set, the choice screen renders in place of the form.
+  const [choice, setChoice] = useState(null);
+
+  // Programme name resolution for the "Start a NEW application for {name}"
+  // button. programmes is loaded by the parent's geo useEffect; if the user
+  // submits before that resolves we fall back to the code.
+  const newProgrammeName = useMemo(() => {
+    if (!programmeCode) return null;
+    const p = programmes.find(x => x.code === programmeCode);
+    return p?.name || programmeCode;
+  }, [programmes, programmeCode]);
+
+  // Shared "do the start + seed PUT + bubble up" flow used by both the
+  // initial Start click and the "Start a NEW application" button on the
+  // choice screen. The only difference is `force: true` for the latter.
+  const performStart = async (values, { force = false } = {}) => {
+    const studentType = applicantType === 'DOMESTIC' ? 'domestic' : 'international';
+    const body = {
+      email: values.email.trim().toLowerCase(),
+      phone: values.mobile.trim(),
+      studentType,
+      ...(programmeCode ? { programmeCode } : {}),
+      ...(force ? { force: true } : {}),
+    };
+    const { data } = await api.post('/public/applications/start', body);
+
+    // Seed the server's formData with email + mobile BEFORE the parent's
+    // hydration useEffect fires. Otherwise that effect's GET /draft sees an
+    // empty server-side formData and wipes the local seed the parent just
+    // set in handleStarted — Step 2 would then load with an empty mobile.
+    // Best-effort: if this PUT fails the start still succeeded and the
+    // applicant just re-enters mobile on Step 2. We avoid surfacing the
+    // error so the user isn't tempted to re-click Start and create a
+    // duplicate draft.
+    try {
+      await api.put(`/public/applications/draft/${encodeURIComponent(data.code)}`, {
+        email: body.email,
+        formData: { email: body.email, mobile: body.phone },
+        currentStep: 1,
+      });
+    } catch (_e) { /* best-effort — see comment above */ }
+
+    onStarted({ code: data.code, email: body.email, mobile: body.phone });
+  };
 
   const onSubmit = async (values) => {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const studentType = applicantType === 'DOMESTIC' ? 'domestic' : 'international';
-      const body = {
-        email: values.email.trim().toLowerCase(),
-        phone: values.mobile.trim(),
-        studentType,
-        ...(programmeCode ? { programmeCode } : {}),
-      };
-      const { data } = await api.post('/public/applications/start', body);
-
-      // Seed the server's formData with email + mobile BEFORE the parent's
-      // hydration useEffect fires. Otherwise that effect's GET /draft sees an
-      // empty server-side formData and wipes the local seed the parent just
-      // set in handleStarted — Step 2 would then load with an empty mobile.
-      // Best-effort: if this PUT fails the start still succeeded and the
-      // applicant just re-enters mobile on Step 2. We avoid surfacing the
-      // error so the user isn't tempted to re-click Start and create a
-      // duplicate draft.
-      try {
-        await api.put(`/public/applications/draft/${encodeURIComponent(data.code)}`, {
-          email: body.email,
-          formData: { email: body.email, mobile: body.phone },
-          currentStep: 1,
-        });
-      } catch (_e) { /* best-effort — see comment above */ }
-
-      onStarted({ code: data.code, email: body.email, mobile: body.phone });
+      await performStart(values);
     } catch (err) {
-      setSubmitError(err?.response?.data?.error || 'Could not start your application. Please try again.');
+      // 409 EXISTING_APPLICATIONS → swap the form for the choice screen.
+      // Anything else → inline error pill.
+      const status = err?.response?.status;
+      const body = err?.response?.data;
+      if (status === 409 && body?.error === 'EXISTING_APPLICATIONS') {
+        setChoice(body);
+      } else {
+        setSubmitError(body?.error || body?.message || 'Could not start your application. Please try again.');
+      }
     } finally {
       setSubmitting(false);
     }
   };
 
+  // Choice screen handlers — all read live form values via getValues() so the
+  // applicant doesn't have to re-type email/mobile after picking an option.
+  const handleResumeDraftClick = (code) => {
+    const values = getValues();
+    onResumeDraft({ code, email: values.email.trim().toLowerCase() });
+  };
+  const handleForceNew = async () => {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await performStart(getValues(), { force: true });
+    } catch (err) {
+      // Even with force, geo enforcement and validation can still fail.
+      const body = err?.response?.data;
+      setSubmitError(body?.error || body?.message || 'Could not start your application. Please try again.');
+      setChoice(null); // back to the form so the user sees the inline error
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const handleCancelChoice = () => {
+    setChoice(null);
+    setSubmitError(null);
+  };
+
   const typeLabel = applicantType === 'DOMESTIC' ? 'domestic' : 'international';
+
+  // ── In-place choice screen (Bug 2) ────────────────────────────────────────
+  if (choice) {
+    return (
+      <ExistingApplicationsChoice
+        choice={choice}
+        newProgrammeName={newProgrammeName}
+        submitting={submitting}
+        onResume={handleResumeDraftClick}
+        onForceNew={handleForceNew}
+        onCancel={handleCancelChoice}
+      />
+    );
+  }
 
   return (
     <div>
@@ -737,12 +905,22 @@ export default function ApplyStart() {
       } catch (err) {
         if (cancelled) return;
         // 403/404 → clear the stale credentials and reset to intro screen.
+        // We STAY on /apply/start (no navigate) — only the local state and
+        // the URL's ?draft= param need cleaning. Don't add a navigate() here;
+        // the catch-all rendering below correctly falls through to Step 0.
         localStorage.removeItem(LS_CODE);
         localStorage.removeItem(LS_EMAIL);
         setDraftCode(null);
         setEmail(null);
         setCurrentStep(0);
-        setLoadError(err?.response?.data?.error || 'Could not load your saved application. You can start again below.');
+        // Strip ?draft= from the URL so a refresh doesn't re-read the same
+        // stale value on initial useState() and re-trigger this whole dance.
+        if (params.get('draft')) {
+          const next = new URLSearchParams(params);
+          next.delete('draft');
+          setParams(next, { replace: true });
+        }
+        setLoadError('We couldn\'t find a saved application matching that link — you can start fresh below.');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -762,6 +940,24 @@ export default function ApplyStart() {
     const next = new URLSearchParams(params);
     next.set('draft', code);
     if (programmeCode) next.set('programme', programmeCode);
+    setParams(next, { replace: true });
+  };
+
+  // Resume an existing draft picked from the choice screen. We deliberately
+  // do NOT seed formData here — the hydration useEffect will fetch and
+  // overwrite it with the saved values (which IS the right move for resume,
+  // unlike the fresh-start case where we have to seed to avoid clobbering).
+  const handleResumeDraft = ({ code, email: resumeEmail }) => {
+    localStorage.setItem(LS_CODE, code);
+    localStorage.setItem(LS_EMAIL, resumeEmail);
+    setLoading(true);
+    setLoadError(null);
+    setFormData({}); // clear stale local state so hydration is the source of truth
+    setDraftCode(code);
+    setEmail(resumeEmail);
+    // Mirror to URL so refresh + share both work.
+    const next = new URLSearchParams(params);
+    next.set('draft', code);
     setParams(next, { replace: true });
   };
 
@@ -818,8 +1014,10 @@ export default function ApplyStart() {
         )}
         <StepIntro
           applicantType={applicantType}
+          programmes={programmes}
           programmeCode={programmeCode}
           onStarted={handleStarted}
+          onResumeDraft={handleResumeDraft}
         />
       </Shell>
     );
