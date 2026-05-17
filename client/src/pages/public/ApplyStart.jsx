@@ -847,11 +847,25 @@ export default function ApplyStart() {
   const programmeCode = (params.get('programme') || '').toUpperCase() || null;
   const draftFromUrl = params.get('draft') || null;
 
-  // Hydrate code/email from URL → localStorage in that order. The URL is the
-  // shareable form (a teammate can send the link); localStorage is the
-  // refresh-survival form.
-  const [draftCode, setDraftCode] = useState(() => draftFromUrl || localStorage.getItem(LS_CODE) || null);
-  const [email, setEmail] = useState(() => localStorage.getItem(LS_EMAIL) || null);
+  // Only auto-hydrate from localStorage if the URL signals resume intent
+  // (i.e. ?draft= is present). Without that signal, clicking "Start
+  // Application" from /apply must land on Step 0 — letting the server's
+  // 409 EXISTING_APPLICATIONS choice screen (Bug 2 fix) handle existing
+  // applications via an explicit user choice rather than silent resume.
+  //
+  // handleStarted / handleResumeDraft both write ?draft= to the URL via
+  // setParams, so in-form refresh still resumes correctly (URL carries
+  // the signal, localStorage carries the paired email).
+  const [draftCode, setDraftCode] = useState(() => {
+    if (draftFromUrl) return draftFromUrl;
+    if (typeof window === 'undefined') return null;
+    // localStorage only counts when the URL is signalling resume
+    return null;
+  });
+  const [email, setEmail] = useState(() => {
+    if (draftFromUrl && typeof window !== 'undefined') return localStorage.getItem(LS_EMAIL) || null;
+    return null;
+  });
 
   const [applicantType, setApplicantType] = useState(null); // 'DOMESTIC' | 'INTERNATIONAL'
   const [programmes, setProgrammes] = useState([]);
