@@ -39,6 +39,7 @@ const STEPS = [
   { id: 4, label: 'Spiritual' },
   { id: 5, label: 'Finance' },
   { id: 6, label: 'Documents' },
+  { id: 7, label: 'Review' },
 ];
 
 // Document checklist shown on Step 6. Keys are the camelCase docTypes that
@@ -1815,6 +1816,487 @@ function formatBytes(n) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// STEP 7 — Application Summary + declarations. Reads everything from the
+// parent's formData (no own form state apart from the four declaration
+// checkboxes). Each section card has an "Edit" link that jumps the user
+// back to that section's step via onEdit; the declaration state is local
+// and intentionally not auto-persisted (declarations only matter at submit
+// time, and getting fresh consent on every revisit is the right move).
+//
+// The Submit button is stubbed in sub-stage 1 — sub-stage 2 will wire the
+// actual /submit call + payment-pending transition.
+// ──────────────────────────────────────────────────────────────────────────────
+function Step7Summary({ applicantType, programmes, formData, onEdit, onBack, saving }) {
+  const isDomestic = applicantType === 'DOMESTIC';
+  const studyMode = String(formData.studyMode || '').toUpperCase();
+  const isOfflineDomestic = isDomestic && studyMode === 'OFFLINE';
+
+  const programme = useMemo(
+    () => (programmes || []).find(p => p.code === formData.programmeCode) || null,
+    [programmes, formData.programmeCode]
+  );
+
+  // Parent declaration is required only for applicants under 18 — mirrors the
+  // backend ageInYearsFrom() gate in validateSubmission (server/routes/public.js).
+  const parentDeclRequired = formData.dateOfBirth ? !isAgeAtLeast(formData.dateOfBirth, 18) : false;
+
+  const [studentDecl, setStudentDecl] = useState(false);
+  const [parentDecl, setParentDecl] = useState(false);
+  const [commitmentDecl, setCommitmentDecl] = useState(false);
+  const [feeDecl, setFeeDecl] = useState(false);
+  const [declError, setDeclError] = useState(null);
+
+  const allChecked =
+    studentDecl &&
+    commitmentDecl &&
+    feeDecl &&
+    (!parentDeclRequired || parentDecl);
+
+  const handleSubmitClick = () => {
+    setDeclError(null);
+    if (!allChecked) {
+      setDeclError('Please review and check all declarations to continue.');
+      return;
+    }
+    // Stubbed for sub-stage 1 — sub-stage 2 wires the real /submit call and
+    // payment-gated success transition. Logging here keeps a paper trail in
+    // the console when the form is exercised pre-payment-integration.
+    // eslint-disable-next-line no-console
+    console.log('[Step 7] Submit stubbed; sub-stage 2 wires /submit + payment', {
+      draftCode: formData.__draftCode,
+      decls: {
+        studentDeclarationAgreed: true,
+        parentDeclarationAgreed: parentDeclRequired ? true : null,
+        commitmentStatementAgreed: true,
+        feeDeclarationAgreed: true,
+      },
+    });
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, color: NAVY, margin: '0 0 8px' }}>
+        Application Summary — Please Review
+      </h2>
+      <p style={{ color: GRAY_600, fontSize: 13, margin: '0 0 20px', lineHeight: 1.6 }}>
+        Review your information below before submitting. Use the <strong>Edit</strong> links to make changes.
+      </p>
+
+      <SummaryProgrammeSection formData={formData} programme={programme} onEdit={() => onEdit(1)} />
+      <SummaryPersonalSection formData={formData} isDomestic={isDomestic} onEdit={() => onEdit(2)} />
+      <SummaryBackgroundSection formData={formData} onEdit={() => onEdit(3)} />
+      <SummarySpiritualSection formData={formData} onEdit={() => onEdit(4)} />
+      <SummaryFinancialSection formData={formData} isDomestic={isDomestic} studyMode={studyMode} onEdit={() => onEdit(5)} />
+      <SummaryDocumentsSection
+        formData={formData}
+        applicantType={applicantType}
+        programmeCode={formData.programmeCode}
+        onEdit={() => onEdit(6)}
+      />
+
+      <FeesBlock programme={programme} isOfflineDomestic={isOfflineDomestic} />
+
+      <DeclarationsBlock
+        parentDeclRequired={parentDeclRequired}
+        studentDecl={studentDecl}     setStudentDecl={setStudentDecl}
+        parentDecl={parentDecl}       setParentDecl={setParentDecl}
+        commitmentDecl={commitmentDecl} setCommitmentDecl={setCommitmentDecl}
+        feeDecl={feeDecl}             setFeeDecl={setFeeDecl}
+      />
+
+      {declError && (
+        <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', borderRadius: 8, fontSize: 13, marginTop: 14 }}>
+          {declError}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 28, gap: 8, flexWrap: 'wrap' }}>
+        <Btn type="button" variant="outline" onClick={onBack} disabled={saving}>← Back</Btn>
+        <Btn type="button" onClick={handleSubmitClick} disabled={!allChecked || saving}>
+          Submit Application & Continue to Payment
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Display helpers for Step 7 ─────────────────────────────────────────────────
+
+// Turn a YYYY-MM-DD-ish string into "15 June 2000". Returns the dash fallback
+// if the input can't be parsed — never throws on garbage.
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+function formatDateLong(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return `${d.getDate()} ${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function formatBoolLabel(v) {
+  if (v === true) return 'Yes';
+  if (v === false) return 'No';
+  return '—';
+}
+
+function formatText(v) {
+  if (v == null) return '—';
+  const s = String(v).trim();
+  return s === '' ? '—' : s;
+}
+
+function formatMoney(amount, currency) {
+  if (amount == null || amount === '') return '—';
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return '—';
+  const symbol = currency === 'INR' ? '₹' : currency === 'USD' ? '$' : '';
+  const locale  = currency === 'INR' ? 'en-IN' : 'en-US';
+  return `${symbol} ${n.toLocaleString(locale)}`;
+}
+
+function SectionCard({ title, onEdit, children }) {
+  return (
+    <div style={{
+      background: '#fff', border: '1px solid #DDE1E7', borderRadius: 12,
+      padding: '18px 20px', marginBottom: 14,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12, gap: 12 }}>
+        <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, color: NAVY, margin: 0 }}>{title}</h3>
+        <button type="button" onClick={onEdit}
+          style={{ background: 'none', border: 'none', color: GOLD, fontWeight: 600, fontSize: 13, cursor: 'pointer', padding: 0 }}>
+          Edit
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Row({ label, value }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '170px 1fr', gap: 10, fontSize: 13, lineHeight: 1.6, padding: '3px 0' }}>
+      <div style={{ color: GRAY_500 }}>{label}</div>
+      <div style={{ color: NAVY, wordBreak: 'break-word' }}>{value}</div>
+    </div>
+  );
+}
+
+function SummaryProgrammeSection({ formData, programme, onEdit }) {
+  const programmeLabel = programme
+    ? `${programme.name} (${programme.code})`
+    : (formData.programmeCode || '—');
+  const studyModeLabel = formData.studyMode
+    ? String(formData.studyMode).charAt(0) + String(formData.studyMode).slice(1).toLowerCase()
+    : '—';
+  return (
+    <SectionCard title="Programme" onEdit={onEdit}>
+      <Row label="Programme" value={programmeLabel} />
+      <Row label="Study mode" value={studyModeLabel} />
+      {programme?.durationYears != null && (
+        <Row label="Duration" value={`${programme.durationYears} year${programme.durationYears === 1 ? '' : 's'}`} />
+      )}
+    </SectionCard>
+  );
+}
+
+function SummaryPersonalSection({ formData, isDomestic, onEdit }) {
+  const fullName = [formData.firstName, formData.lastName].filter(Boolean).join(' ') || '—';
+  return (
+    <SectionCard title="Personal Information" onEdit={onEdit}>
+      <Row label="Full name" value={fullName} />
+      <Row label="Email" value={formatText(formData.email)} />
+      <Row label="Mobile" value={formatText(formData.mobile)} />
+      {formData.whatsapp && <Row label="WhatsApp" value={formatText(formData.whatsapp)} />}
+      <Row label="Gender" value={formatText(formData.gender)} />
+      <Row label="Date of birth" value={formatDateLong(formData.dateOfBirth)} />
+      <Row label="Place of birth" value={formatText(formData.placeOfBirth)} />
+      <Row label="Nationality" value={formatText(formData.nationality)} />
+      <Row label="Mother tongue" value={formatText(formData.motherTongue)} />
+      <Row label="Marital status" value={formatText(formData.maritalStatus)} />
+      {formData.spouseName && <Row label="Spouse name" value={formatText(formData.spouseName)} />}
+      {formData.childrenInfo && <Row label="Children" value={formatText(formData.childrenInfo)} />}
+      <Row label="Emergency contact" value={formatText(formData.emergencyContact)} />
+
+      {isDomestic ? (
+        <>
+          <div style={{ marginTop: 12, borderTop: '1px dashed #E5E7EB', paddingTop: 10 }}>
+            <div style={{ fontWeight: 600, color: NAVY, fontSize: 13, marginBottom: 6 }}>Present address</div>
+            <Row label="Address" value={formatText(formData.presentAddressLine)} />
+            <Row label="State" value={formatText(formData.presentAddressState)} />
+            <Row label="Country" value={formatText(formData.presentAddressCountry)} />
+            <Row label="PIN code" value={formatText(formData.presentAddressPin)} />
+          </div>
+          <div style={{ marginTop: 12, borderTop: '1px dashed #E5E7EB', paddingTop: 10 }}>
+            <div style={{ fontWeight: 600, color: NAVY, fontSize: 13, marginBottom: 6 }}>Permanent address</div>
+            <Row label="Address" value={formatText(formData.permanentAddressLine)} />
+            <Row label="State" value={formatText(formData.permanentAddressState)} />
+            <Row label="Country" value={formatText(formData.permanentAddressCountry)} />
+            <Row label="PIN code" value={formatText(formData.permanentAddressPin)} />
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ marginTop: 12, borderTop: '1px dashed #E5E7EB', paddingTop: 10 }}>
+            <div style={{ fontWeight: 600, color: NAVY, fontSize: 13, marginBottom: 6 }}>Residence</div>
+            <Row label="Country" value={formatText(formData.countryOfResidence)} />
+            <Row label="City" value={formatText(formData.cityOfResidence)} />
+          </div>
+          <div style={{ marginTop: 12, borderTop: '1px dashed #E5E7EB', paddingTop: 10 }}>
+            <div style={{ fontWeight: 600, color: NAVY, fontSize: 13, marginBottom: 6 }}>Passport</div>
+            <Row label="Number" value={formatText(formData.passportNumber)} />
+            <Row label="Country of issue" value={formatText(formData.passportCountryOfIssue)} />
+          </div>
+        </>
+      )}
+    </SectionCard>
+  );
+}
+
+function SummaryBackgroundSection({ formData, onEdit }) {
+  const eduEntries = Array.isArray(formData.educationEntries) ? formData.educationEntries : [];
+  const langEntries = Array.isArray(formData.languages) ? formData.languages : [];
+  return (
+    <SectionCard title="Background & Education" onEdit={onEdit}>
+      <Row label="Father's name" value={formatText(formData.fatherName)} />
+      {formData.fatherOccupation && <Row label="Father's occupation" value={formatText(formData.fatherOccupation)} />}
+      <Row label="Mother's name" value={formatText(formData.motherName)} />
+      {formData.motherOccupation && <Row label="Mother's occupation" value={formatText(formData.motherOccupation)} />}
+      {formData.numberOfSiblings !== '' && formData.numberOfSiblings != null && (
+        <Row label="Siblings" value={String(formData.numberOfSiblings)} />
+      )}
+      <Row label="Family church affiliation" value={formatText(formData.familyChurchAffiliation)} />
+      <Row label="Christian background" value={formatText(formData.familyChristianBackground)} />
+
+      <div style={{ marginTop: 12, borderTop: '1px dashed #E5E7EB', paddingTop: 10 }}>
+        <div style={{ fontWeight: 600, color: NAVY, fontSize: 13, marginBottom: 6 }}>
+          Education ({eduEntries.length})
+        </div>
+        {eduEntries.length === 0
+          ? <div style={{ color: GRAY_500, fontSize: 13 }}>—</div>
+          : eduEntries.map((e, i) => (
+            <div key={i} style={{ background: '#F9FAFB', borderRadius: 8, padding: '8px 12px', marginBottom: 6 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, color: NAVY }}>{formatText(e.qualification)}</div>
+              <div style={{ fontSize: 12, color: GRAY_600 }}>
+                {formatText(e.institutionName)} · {formatText(e.boardOrUniversity)}
+              </div>
+              <div style={{ fontSize: 12, color: GRAY_600 }}>
+                Passed {formatText(e.yearOfPassing)} · {formatText(e.percentageOrGrade)}
+                {e.languageOfInstruction ? ` · Medium ${e.languageOfInstruction}` : ''}
+              </div>
+            </div>
+          ))}
+      </div>
+
+      <div style={{ marginTop: 12, borderTop: '1px dashed #E5E7EB', paddingTop: 10 }}>
+        <div style={{ fontWeight: 600, color: NAVY, fontSize: 13, marginBottom: 6 }}>
+          Languages ({langEntries.length})
+        </div>
+        {langEntries.length === 0
+          ? <div style={{ color: GRAY_500, fontSize: 13 }}>—</div>
+          : langEntries.map((l, i) => {
+            const skills = [l.understand && 'understand', l.speak && 'speak', l.readWrite && 'read/write'].filter(Boolean);
+            return (
+              <div key={i} style={{ background: '#F9FAFB', borderRadius: 8, padding: '8px 12px', marginBottom: 6 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: NAVY }}>{formatText(l.language)}</div>
+                <div style={{ fontSize: 12, color: GRAY_600 }}>
+                  {skills.length ? skills.join(', ') : '—'}
+                </div>
+              </div>
+            );
+          })}
+      </div>
+    </SectionCard>
+  );
+}
+
+function SummarySpiritualSection({ formData, onEdit }) {
+  const baptized = formData.baptismStatus === 'Baptized' || formData.waterBaptism === true;
+  return (
+    <SectionCard title="Spiritual Journey" onEdit={onEdit}>
+      <Row label="Salvation testimony" value={formatText(formData.salvationTestimony)} />
+      <Row label="Water baptism" value={baptized ? 'Baptized' : (formData.baptismStatus || formData.waterBaptism === false ? 'Not yet baptized' : '—')} />
+      {baptized && (
+        <>
+          <Row label="Baptism date" value={formatDateLong(formData.baptismDate || formData.waterBaptismWhen)} />
+          {formData.baptismLocation && <Row label="Baptism location" value={formatText(formData.baptismLocation)} />}
+        </>
+      )}
+      <Row label="Church" value={formatText(formData.churchName)} />
+      <Row label="Pastor" value={formatText(formData.pastorName)} />
+      {formData.yearsAtCurrentChurch !== '' && formData.yearsAtCurrentChurch != null && (
+        <Row label="Years at current church" value={String(formData.yearsAtCurrentChurch)} />
+      )}
+      {formData.previousChurches && <Row label="Previous churches" value={formatText(formData.previousChurches)} />}
+      {formData.spiritualGifts && <Row label="Spiritual gifts" value={formatText(formData.spiritualGifts)} />}
+      {formData.ministryInvolvement && <Row label="Ministry involvement" value={formatText(formData.ministryInvolvement)} />}
+      <Row label="Why HMC" value={formatText(formData.whyHmc)} />
+      <Row label="Future ministry plans" value={formatText(formData.futureMinistryPlans)} />
+    </SectionCard>
+  );
+}
+
+function SummaryFinancialSection({ formData, isDomestic, studyMode, onEdit }) {
+  const layoutA = isDomestic && studyMode === 'OFFLINE';
+  const layoutB = isDomestic && studyMode === 'ONLINE';
+  const layoutC = !isDomestic;
+
+  const methodLabel =
+    formData.paymentMethod === 'workScholarship' ? 'Work scholarship' :
+    formData.paymentMethod === 'fees' ? 'Pay tuition fees' : '—';
+
+  return (
+    <SectionCard title="Financial" onEdit={onEdit}>
+      {layoutA && (
+        <>
+          <Row label="Payment method" value={methodLabel} />
+          {formData.paymentMethod === 'workScholarship' && (
+            <Row label="Commit 2 hrs/day work" value={formatBoolLabel(formData.commitTwoHoursDaily)} />
+          )}
+          <Row label="Fee responsibility" value={formatText(formData.feeResponsibility)} />
+        </>
+      )}
+      {layoutB && (
+        <>
+          <Row label="Payment method" value="Pay tuition fees (online)" />
+          <Row label="Fee responsibility" value={formatText(formData.feeResponsibility)} />
+          <Row label="Needs financial aid" value={formatBoolLabel(formData.needsFinancialAid)} />
+          {formData.needsFinancialAid === true && (
+            <Row label="Financial aid note" value={formatText(formData.financialAidNote)} />
+          )}
+        </>
+      )}
+      {layoutC && (
+        <>
+          <Row label="Payment method" value="Pay tuition fees (online)" />
+          <Row label="Needs financial aid" value={formatBoolLabel(formData.needsFinancialAid)} />
+          {formData.needsFinancialAid === true && (
+            <Row label="Financial aid note" value={formatText(formData.financialAidNote)} />
+          )}
+        </>
+      )}
+    </SectionCard>
+  );
+}
+
+function SummaryDocumentsSection({ formData, applicantType, programmeCode, onEdit }) {
+  const visibleSpecs = useMemo(() => {
+    const all = DOCUMENT_SPECS[applicantType] || DOCUMENT_SPECS.DOMESTIC;
+    return all.filter(s => !s.requiresProgrammes || s.requiresProgrammes.includes(programmeCode));
+  }, [applicantType, programmeCode]);
+  const docs = (formData && formData.documents) || {};
+  return (
+    <SectionCard title="Documents" onEdit={onEdit}>
+      {visibleSpecs.map(spec => {
+        const d = docs[spec.docType];
+        return (
+          <div key={spec.docType} style={{ display: 'grid', gridTemplateColumns: '170px 1fr', gap: 10, fontSize: 13, lineHeight: 1.6, padding: '3px 0' }}>
+            <div style={{ color: GRAY_500 }}>{spec.label}{!spec.required && <span style={{ fontSize: 11, marginLeft: 6 }}>(optional)</span>}</div>
+            <div style={{ color: NAVY, wordBreak: 'break-word' }}>
+              {d
+                ? <>
+                    <span style={{ color: '#166534', fontWeight: 600 }}>✓</span>{' '}
+                    {formatText(d.fileName)}
+                    {typeof d.fileSize === 'number' && d.fileSize > 0 ? ` · ${formatBytes(d.fileSize)}` : ''}
+                  </>
+                : <span style={{ color: GRAY_500 }}>{spec.required ? 'Not uploaded' : '—'}</span>
+              }
+            </div>
+          </div>
+        );
+      })}
+    </SectionCard>
+  );
+}
+
+function FeesBlock({ programme, isOfflineDomestic }) {
+  const totalCost     = programme ? programme.totalCost : null;
+  const applicationFee = programme ? programme.applicationFee : null;
+  const currency      = programme ? programme.currency : 'INR';
+  return (
+    <div style={{
+      background: NAVY, color: '#fff', borderRadius: 12,
+      padding: '20px 22px', marginBottom: 18, borderLeft: `4px solid ${GOLD}`,
+    }}>
+      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, color: '#fff', margin: '0 0 12px' }}>
+        Fees Payable
+      </h3>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Tuition fee (total)</div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, color: GOLD }}>
+            {formatMoney(totalCost, currency)}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Application fee</div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, color: GOLD }}>
+            {formatMoney(applicationFee, currency)}
+          </div>
+        </div>
+      </div>
+      <div style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 8, padding: '10px 14px', fontSize: 13, lineHeight: 1.6 }}>
+        {isOfflineDomestic ? (
+          <>
+            Tuition fees are payable at the university campus upon arrival, or offset
+            via work scholarship if approved. <strong>Only the application fee is payable
+            online during this submission.</strong>
+          </>
+        ) : (
+          <>
+            Both tuition and application fees are payable online. <strong>The application
+            fee is due now to complete your application;</strong> tuition will follow a
+            payment schedule.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeclarationsBlock({
+  parentDeclRequired,
+  studentDecl, setStudentDecl,
+  parentDecl, setParentDecl,
+  commitmentDecl, setCommitmentDecl,
+  feeDecl, setFeeDecl,
+}) {
+  return (
+    <div style={{ background: '#fff', border: '1px solid #DDE1E7', borderRadius: 12, padding: '18px 20px', marginBottom: 14 }}>
+      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, color: NAVY, margin: '0 0 14px' }}>
+        Declarations
+      </h3>
+      <DeclarationItem
+        checked={studentDecl} onChange={setStudentDecl}
+        text="I declare that the information provided in this application is true, accurate, and complete to the best of my knowledge. I understand that any false or misleading information may result in the cancellation of my admission."
+      />
+      {parentDeclRequired && (
+        <DeclarationItem
+          checked={parentDecl} onChange={setParentDecl}
+          text="As the parent or legal guardian of the applicant, I consent to this application and accept responsibility for the applicant's enrollment and conduct at Harvest Mission College."
+        />
+      )}
+      <DeclarationItem
+        checked={commitmentDecl} onChange={setCommitmentDecl}
+        text="I commit to upholding the values and code of conduct of Harvest Mission College, including regular chapel attendance, classroom participation, and Christian character throughout my time as a student."
+      />
+      <DeclarationItem
+        checked={feeDecl} onChange={setFeeDecl}
+        text="I understand the fee structure as shown above and commit to paying fees as required by the institution."
+      />
+    </div>
+  );
+}
+
+function DeclarationItem({ checked, onChange, text }) {
+  return (
+    <label style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '8px 0', cursor: 'pointer' }}>
+      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)}
+        style={{ marginTop: 3, width: 16, height: 16, flexShrink: 0 }} />
+      <span style={{ color: NAVY, fontSize: 13, lineHeight: 1.6 }}>{text}</span>
+    </label>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Footer with Back/Next + Save indicator. Used by every step.
 // ──────────────────────────────────────────────────────────────────────────────
 function FormFooter({ onBack, saving }) {
@@ -2108,21 +2590,31 @@ export default function ApplyStart() {
         />
       )}
 
-      {currentStep >= 7 && (
-        // Step 6 (documents) is complete. The Application Summary screen with
-        // declarations + first-fees reveal + submit lands in Stage 2b-3.
+      {currentStep === 7 && (
+        <Step7Summary
+          applicantType={applicantType}
+          programmes={programmes}
+          formData={formData}
+          onEdit={(stepId) => setCurrentStep(stepId)}
+          onBack={() => setCurrentStep(6)}
+          saving={saving}
+        />
+      )}
+
+      {currentStep >= 8 && (
+        // Reachable only after the (stubbed) Submit on Step 7 advances past the
+        // review screen. Sub-stage 2 replaces this with the real /apply/payment
+        // page once the submit handler + payment-pending transition are wired.
         <div style={{ padding: 32, background: '#fff', border: '1px solid #DDE1E7', borderRadius: 12, textAlign: 'center' }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>✅</div>
           <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, color: NAVY, margin: '0 0 8px' }}>
-            Step 6 of 6 complete
+            Review complete
           </h2>
           <p style={{ color: GRAY_600, fontSize: 14, margin: '0 0 16px' }}>
-            Application Summary screen launching shortly. We'll email you at <strong>{email}</strong>{' '}
-            when it's ready, or use your code{' '}
-            <code style={{ background: NAVY_BG, padding: '2px 8px', borderRadius: 4 }}>{draftCode}</code>{' '}
-            to return here.
+            Submit + payment integration lands in the next sub-stage. Your draft is preserved at{' '}
+            <code style={{ background: NAVY_BG, padding: '2px 8px', borderRadius: 4 }}>{draftCode}</code>.
           </p>
-          <Btn variant="outline" onClick={() => setCurrentStep(6)}>← Back to Step 6</Btn>
+          <Btn variant="outline" onClick={() => setCurrentStep(7)}>← Back to Review</Btn>
         </div>
       )}
 
