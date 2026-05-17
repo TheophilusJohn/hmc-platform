@@ -1611,6 +1611,13 @@ function Step6Documents({ applicantType, programmeCode, draftCode, email, initia
       const { data } = await api.post(
         `/public/applications/draft/${encodeURIComponent(draftCode)}/documents/${encodeURIComponent(spec.docType)}`,
         fd,
+        {
+          // Setting Content-Type to undefined makes axios omit its default
+          // 'application/json' header for this request, letting the browser
+          // set the multipart/form-data header with the correct boundary
+          // parameter (required for multer on the server to parse the body).
+          headers: { 'Content-Type': undefined },
+        },
       );
       const slot = data.document || {};
       setRow(spec.docType, {
