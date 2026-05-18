@@ -62,6 +62,31 @@ function listShape(row) {
   };
 }
 
+// Canonical "displayable name for any User" — mirrors the fallback chain
+// in server/src/routes/auth.js:120-124 (studentProfile → facultyProfile →
+// email). FULL_ADMIN and ADMISSIONS_OFFICER have no profile rows, so they
+// intentionally fall through to email. TEACHER_ADMIN and FACULTY have a
+// facultyProfile. STUDENT (shouldn't decide scholarships, but covered for
+// completeness) has a studentProfile. Sub-stage 5's PUT endpoint will use
+// the same shape — if a third caller adopts this, factor to a helper.
+function deciderDisplay(decider) {
+  if (!decider) return null;
+  const sp = decider.studentProfile;
+  const fp = decider.facultyProfile;
+  const name = sp
+    ? `${sp.firstName || ''} ${sp.lastName || ''}`.trim()
+    : fp
+      ? `${fp.firstName || ''} ${fp.lastName || ''}`.trim()
+      : '';
+  return {
+    id:            decider.id,
+    name:          name || decider.email,
+    email:         decider.email,
+    userIdDisplay: decider.userIdDisplay,
+    role:          decider.role,
+  };
+}
+
 // Full detail shape — includes everything the review modal needs to
 // surface relevant context for a decision: family info, fee responsibility,
 // the full applicantNote (not truncated), decision audit trail.
@@ -85,13 +110,7 @@ function detailShape(row) {
     decisionNotes:    row.decisionNotes,
     createdAt:        row.createdAt,
     updatedAt:        row.updatedAt,
-    decider: row.decider ? {
-      id:    row.decider.id,
-      firstName: row.decider.firstName,
-      lastName:  row.decider.lastName,
-      email:     row.decider.email,
-      userIdDisplay: row.decider.userIdDisplay,
-    } : null,
+    decider: deciderDisplay(row.decider),
     applicant: {
       id:               a.id,
       applicationNo:    a.applicationNo,
@@ -193,7 +212,13 @@ router.get('/:id', authenticate, admissionsAccess, async (req, res, next) => {
           },
         },
         decider: {
-          select: { id: true, firstName: true, lastName: true, email: true, userIdDisplay: true },
+          // User itself has no firstName/lastName columns — names live on
+          // the profile rows. deciderDisplay() canonicalizes the lookup.
+          select: {
+            id: true, email: true, userIdDisplay: true, role: true,
+            studentProfile: { select: { firstName: true, lastName: true } },
+            facultyProfile: { select: { firstName: true, lastName: true } },
+          },
         },
       },
     });

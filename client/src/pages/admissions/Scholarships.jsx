@@ -188,7 +188,7 @@ function ScholarshipDetailModal({ id, onClose }) {
             {s.decidedAt && (
               <span style={{ fontSize: 12, color: '#5A6272' }}>
                 Decided {formatDate(s.decidedAt)}
-                {s.decider ? ` by ${s.decider.firstName || ''} ${s.decider.lastName || ''}`.trim() : ''}
+                {s.decider ? ` by ${s.decider.name || s.decider.email}` : ''}
               </span>
             )}
           </div>
@@ -261,7 +261,7 @@ function ScholarshipDetailModal({ id, onClose }) {
                   </RowBlock>
                 )}
                 {s.decider && (
-                  <Row label="Decided by" value={`${s.decider.firstName || ''} ${s.decider.lastName || ''}`.trim() || s.decider.email} />
+                  <Row label="Decided by" value={s.decider.name || s.decider.email} />
                 )}
                 <Row label="Decided at" value={formatDate(s.decidedAt)} />
               </>
