@@ -233,6 +233,7 @@ function ScholarshipDetailModal({ id, onClose }) {
               <Row label="Siblings" value={String(a.numberOfSiblings)} />
             )}
             <Row label="Christian background" value={a.familyChristianBackground} />
+            <Row label="Church affiliation"   value={a.familyChurchAffiliation} />
             <Row label="Fee responsibility"   value={a.feeResponsibility} />
             <Row label="Needs financial aid"  value={yesNoOrDash(a.needsFinancialAid)} />
             {a.sponsoredByOrg && <Row label="Sponsoring organization" value={a.sponsoredByOrg} />}

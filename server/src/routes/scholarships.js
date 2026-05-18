@@ -93,6 +93,15 @@ function deciderDisplay(decider) {
 function detailShape(row) {
   const a = row.applicant || {};
   const fd = a.formData || {};
+  // formData on Applicant is the flattenSnapshot built at submit time
+  // (server/src/routes/public.js) — legacy keys (firstName, lastName,
+  // email, phone, dob, gender, nationality, maritalStatus, studyMode,
+  // present/permanent address, statementOfFaith, academicBackground) sit
+  // at the top level; every other Step 1-6 form field lands inside
+  // _public. Family-context fields below need the unwrap. Mirrors the
+  // pattern in server/src/routes/admissions.js flatten(). Phase 2d may
+  // normalize this read path (see phase2d-backlog.md).
+  const pub = (fd && typeof fd._public === 'object' && fd._public) || {};
   const firstName = String(fd.firstName || '').trim();
   const lastName  = String(fd.lastName  || '').trim();
   return {
@@ -122,22 +131,25 @@ function detailShape(row) {
       programmeName:    a.programme?.name || null,
       programmeCode:    a.programme?.code || null,
       // Selected applicant context that an officer needs to make a decision.
-      // Names come from formData (no first-class columns); the rest mirror
-      // Step 2/3/5 fields. Family fields live in formData under the same
-      // keys the public form writes (no _public unwrap needed — pickForm
-      // keeps them top-level in formData).
+      // Names + email + maritalStatus sit at the top level of the flatten
+      // snapshot; mobile lives on the Applicant column (not the snapshot
+      // top level). Family fields below require the _public unwrap.
       firstName,
       lastName,
       email:            fd.email || null,
       mobile:           a.mobile || fd.mobile || null,
       maritalStatus:    a.maritalStatus || fd.maritalStatus || null,
-      // Family + financial context (admin uses these to evaluate the request)
-      fatherName:           fd.fatherName       || null,
-      fatherOccupation:     fd.fatherOccupation || null,
-      motherName:           fd.motherName       || null,
-      motherOccupation:     fd.motherOccupation || null,
-      numberOfSiblings:     fd.numberOfSiblings ?? null,
-      familyChristianBackground: fd.familyChristianBackground || null,
+      // Family + financial context (admin uses these to evaluate the request).
+      // Family fields are _public-only — no Applicant columns for them.
+      // Christian background + church affiliation matter for theological
+      // college admissions, so both surface here.
+      fatherName:                pub.fatherName                || null,
+      fatherOccupation:          pub.fatherOccupation          || null,
+      motherName:                pub.motherName                || null,
+      motherOccupation:          pub.motherOccupation          || null,
+      numberOfSiblings:          pub.numberOfSiblings          ?? null,
+      familyChristianBackground: pub.familyChristianBackground || null,
+      familyChurchAffiliation:   pub.familyChurchAffiliation   || null,
       feeResponsibility:    a.feeResponsibility    || fd.feeResponsibility    || null,
       needsFinancialAid:    typeof a.needsFinancialAid === 'boolean' ? a.needsFinancialAid
                           : (typeof fd.needsFinancialAid === 'boolean' ? fd.needsFinancialAid : null),
